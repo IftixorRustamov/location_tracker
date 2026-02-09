@@ -1,0 +1,38 @@
+name: location_tracker
+description: "A new Flutter project."
+publish_to: 'none'
+
+version: 1.0.0+1
+
+environment:
+  sdk: ^3.10.1
+
+dependencies:
+  flutter:
+    sdk: flutter
+  cupertino_icons: ^1.0.8
+  shared_preferences: ^2.2.2
+  dio: ^5.9.1
+  pretty_dio_logger: ^1.4.0
+  logger: ^2.6.2
+  location: ^5.0.3
+  flutter_map: ^6.1.0
+  latlong2: ^0.9.0
+  get_it: ^9.2.0
+  flutter_bloc: ^9.1.1
+  flutter_compass: ^0.8.0
+  sqflite: ^2.3.0
+  path: ^1.9.0
+  connectivity_plus: ^7.0.0
+#  battery_plus: ^6.0.3                # Check battery level
+#  permission_handler: ^11.0.0         # For activity permissions
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/logo_white.jpeg
