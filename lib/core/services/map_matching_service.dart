@@ -8,6 +8,7 @@ class MapMatchingService {
 
   MapMatchingService(this._dio);
 
+
   final String _baseUrl = 'https://router.project-osrm.org/match/v1/driving';
 
   Future<List<LatLng>> getSnappedRoute(List<LatLng> rawPoints) async {
