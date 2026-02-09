@@ -13,6 +13,7 @@ class MapMatchingService {
   Future<List<LatLng>> getSnappedRoute(List<LatLng> rawPoints) async {
     if (rawPoints.length < 2) return rawPoints;
 
+
     final List<LatLng> processingPoints = rawPoints.length > 40
         ? rawPoints.sublist(rawPoints.length - 40)
         : rawPoints;
