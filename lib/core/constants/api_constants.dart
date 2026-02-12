@@ -1,5 +1,6 @@
 abstract class ApiConstants {
-  static const String baseUrl = 'http://192.168.20.188:8080';
+  static const String baseUrl =
+      'https://untensing-hendrix-unsentenced.ngrok-free.dev';
 
   static const String api = '/api';
   static const String authPath = '/auth';
@@ -13,5 +14,4 @@ abstract class ApiConstants {
   static const String startTracking = '$api/v1/users/tracking/sessions/start';
   static const String stopTracking = '$api/v1/users/tracking/sessions/stop';
   static const String updateLocation = '$api/v1/users/tracking/location';
-
 }

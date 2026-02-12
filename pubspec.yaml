@@ -24,6 +24,10 @@ dependencies:
   sqflite: ^2.3.0
   path: ^1.9.0
   connectivity_plus: ^7.0.0
+  yandex_mapkit: ^4.2.1
+  wakelock_plus: ^1.4.0
+  jwt_decoder: ^2.0.1
+  intl: ^0.20.2
 #  battery_plus: ^6.0.3                # Check battery level
 #  permission_handler: ^11.0.0         # For activity permissions
 
@@ -36,3 +40,4 @@ flutter:
   uses-material-design: true
   assets:
     - assets/logo_white.jpeg
+    - assets/user_arrow.png

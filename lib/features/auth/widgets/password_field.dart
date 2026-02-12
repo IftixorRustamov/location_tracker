@@ -71,7 +71,7 @@ class PasswordField extends StatelessWidget {
           validator ??
           (val) {
             if (val == null || val.isEmpty) return 'Please enter a password';
-            if (val.length < 6) return 'Min 6 characters';
+            if (val.length < 5) return 'Min 5 characters';
             return null;
           },
     );

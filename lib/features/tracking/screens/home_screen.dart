@@ -1,21 +1,22 @@
 import 'dart:async';
-import 'dart:developer';
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:flutter_compass/flutter_compass.dart';
-import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:location/location.dart';
+
 import 'package:location_tracker/core/di/injection_container.dart';
 import 'package:location_tracker/core/services/api_service.dart';
 import 'package:location_tracker/core/services/local_db_service.dart';
 import 'package:location_tracker/core/services/map_matching_service.dart';
 import 'package:location_tracker/data/models/location_point.dart' as data;
+
 import 'package:location_tracker/features/auth/bloc/auth_bloc.dart';
 import 'package:location_tracker/features/auth/bloc/auth_state.dart';
+import 'package:location_tracker/features/tracking/widgets/yandex_map_background.dart';
+import 'package:location_tracker/features/tracking/logic/tracking_manager.dart';
 
-import '../widgets/map_background.dart';
 import '../widgets/tracking_hud.dart';
 import '../widgets/tracking_fab.dart';
 import '../widgets/profile_sheet.dart';
@@ -27,31 +28,26 @@ class HomeScreen extends StatefulWidget {
   State<HomeScreen> createState() => _HomeScreenState();
 }
 
-class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
-  // --- Controllers ---
-  final MapController _mapController = MapController();
-  final Location _location = Location();
+class _HomeScreenState extends State<HomeScreen>
+    with TickerProviderStateMixin, TrackingManager {
 
-  // --- Streams & Timers ---
-  StreamSubscription<LocationData>? _gpsSubscription;
-  StreamSubscription<CompassEvent>? _compassSubscription;
-  Timer? _sessionTimer;
-  Timer? _syncTimer;
-  Timer? _snapTimer;
+  // --- Controllers ---
+  final Location _location = Location();
 
   // --- Data ---
   List<LatLng> _polylineCoordinates = [];
   List<LatLng> _smoothCoordinates = [];
 
-  Duration _sessionDuration = Duration.zero;
   String? _username;
   LatLng? _currentPosition;
   double _currentHeading = 0.0;
+  StreamSubscription<CompassEvent>? _compassSubscription;
 
-  // --- UI State ---
-  bool _isTracking = false;
-  bool _isBusy = false;
-  bool _isOffline = false;
+  // --- NEW: Live Stats ---
+  double _totalDistanceMeters = 0.0;
+  double _currentSpeedKmph = 0.0;
+  double _currentAccuracy = 0.0; // Added this to track signal strength
+  int? _currentSessionId;
 
   @override
   void initState() {
@@ -63,12 +59,8 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
 
   @override
   void dispose() {
-    _gpsSubscription?.cancel();
+    stopAllStreams();
     _compassSubscription?.cancel();
-    _sessionTimer?.cancel();
-    _syncTimer?.cancel();
-    _snapTimer?.cancel(); // Cancel snap timer
-    _mapController.dispose();
     super.dispose();
   }
 
@@ -92,14 +84,13 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
       if (loc.latitude != null && loc.longitude != null) {
         final pos = LatLng(loc.latitude!, loc.longitude!);
         setState(() => _currentPosition = pos);
-        _mapController.move(pos, 16);
       }
     } catch (_) {}
   }
 
   // --- 2. Tracking Logic ---
   Future<void> _toggleTracking() async {
-    if (_isTracking) {
+    if (isTracking) {
       await _stopSession();
     } else {
       await _startSession();
@@ -107,178 +98,179 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
   }
 
   Future<void> _startSession() async {
-    setState(() {
-      _isTracking = true;
-      _sessionDuration = Duration.zero;
-      _polylineCoordinates = [];
-      _smoothCoordinates = [];
-    });
+    setState(() => isBusy = true);
 
-    if (!await _checkPermissions()) {
-      setState(() => _isBusy = false);
+    if (!await checkLocationPermissions(_location)) {
+      setState(() => isBusy = false);
       return;
     }
 
     final result = await sl<ApiService>().startTrackingSession();
+
     if (result['success']) {
+      final newSessionId = await LocalDatabase.instance.createSession();
+
       setState(() {
-        _isTracking = true;
-        _sessionDuration = Duration.zero;
-        _polylineCoordinates = []; // Reset list
+        _currentSessionId = newSessionId; // Save ID
+        isTracking = true;
+        sessionDuration = Duration.zero;
+        _polylineCoordinates = [];
+        _smoothCoordinates = [];
+        _totalDistanceMeters = 0.0;
+        _currentSpeedKmph = 0.0;
+        _currentAccuracy = 0.0;
       });
-      _startTimer();
-      _startHighPrecisionGPS();
-      _startBackgroundSync();
-      _startMapMatching(); // Start smoothing the lines
+
+      await toggleScreenAwake(true);
+      await toggleBackgroundMode(true);
+
+      _startServices();
     } else {
       _showSnack(result['message'] ?? 'Failed to start', isError: true);
     }
-    setState(() => _isBusy = false);
-  }
-
-  Future<bool> _checkPermissions() async {
-    bool serviceEnabled = await _location.serviceEnabled();
-    if (!serviceEnabled) {
-      serviceEnabled = await _location.requestService();
-      if (!serviceEnabled) return false;
-    }
-    PermissionStatus permission = await _location.hasPermission();
-    if (permission == PermissionStatus.denied) {
-      permission = await _location.requestPermission();
-      if (permission != PermissionStatus.granted) return false;
-    }
-    return true;
+    setState(() => isBusy = false);
   }
 
   Future<void> _stopSession() async {
-    setState(() => _isBusy = true);
-    _gpsSubscription?.cancel();
-    _sessionTimer?.cancel();
-    _syncTimer?.cancel();
-    _snapTimer?.cancel();
+    setState(() => isBusy = true);
 
-    // Final smooth & sync
-    await _refinePath();
-    await _performSync();
+    // 1. Stop Hardware & Streams
+    await toggleScreenAwake(false);
+    await toggleBackgroundMode(false);
+    stopAllStreams(); // This stops GPS, Timers, etc.
 
+    if (_currentSessionId != null) {
+      await LocalDatabase.instance.updateSessionStats(
+        _currentSessionId!,
+        _totalDistanceMeters / 1000.0, // Convert meters to KM
+        sessionDuration.inSeconds,     // Save duration in seconds
+      );
+    }
+
+    // 3. Final Polish
+    await _refinePath(); // Run map matching one last time
+    await _performSync(); // Upload remaining points to server
+
+    // 4. API Stop
     await sl<ApiService>().stopTrackingSession();
 
-    setState(() => _isTracking = false);
+    // 5. Reset UI State
+    setState(() {
+      isTracking = false;
+      _currentSessionId = null; // Clear the session ID so we don't accidentally update it later
+      isBusy = false;
+    });
+
     _showSnack('Session Saved!', isError: false);
-    setState(() => _isBusy = false);
   }
 
   // --- 3. GPS & Sync Logic ---
-  void _startHighPrecisionGPS() {
+  void _startServices() {
+    sessionTimer = Timer.periodic(const Duration(seconds: 1), (_) {
+      setState(() => sessionDuration += const Duration(seconds: 1));
+    });
+
+    syncTimer = Timer.periodic(
+      const Duration(seconds: 5),
+          (_) => _performSync(),
+    );
+
+    snapTimer = Timer.periodic(
+      const Duration(seconds: 10),
+          (_) => _refinePath(),
+    );
+
     _location.changeSettings(
       accuracy: LocationAccuracy.navigation,
       interval: 1000,
       distanceFilter: 5,
     );
-    _gpsSubscription = _location.onLocationChanged.listen((loc) async {
-      if (loc.latitude == null) return;
 
-      // Indoor Filter: Ignore bad accuracy (>15m)
+    gpsSubscription = _location.onLocationChanged.listen((loc) async {
+      if (loc.latitude == null) return;
       if ((loc.accuracy ?? 100) > 15) return;
-      // Static Filter: Ignore standing still (<0.5m/s)
-      if ((loc.speed ?? 0) < 0.5) return;
+
+      // Filter: Stop if standing still
+      if ((loc.speed ?? 0) < 0.5) {
+        if (mounted && _currentSpeedKmph > 0) {
+          setState(() => _currentSpeedKmph = 0);
+        }
+        return;
+      }
 
       final newPos = LatLng(loc.latitude!, loc.longitude!);
+
+      // --- Stats Calculation ---
+      if (_polylineCoordinates.isNotEmpty) {
+        final double dist = const Distance().as(
+            LengthUnit.Meter,
+            _polylineCoordinates.last,
+            newPos
+        );
+        if (dist > 2) {
+          _totalDistanceMeters += dist;
+        }
+      }
+
+      // Speed (m/s -> km/h)
+      double rawSpeed = loc.speed ?? 0;
+      if (rawSpeed < 0) rawSpeed = 0;
+
+      // Update local values for DB
+      final speedKmph = rawSpeed * 3.6;
+      final accuracy = loc.accuracy ?? 0;
 
       final point = data.LocationPoint(
         lat: loc.latitude!,
         lon: loc.longitude!,
-        accuracy: loc.accuracy ?? 0,
-        speed: loc.speed ?? 0,
+        accuracy: accuracy,
+        speed: loc.speed ?? 0, // Store as m/s in DB (standard)
         timestamp: DateTime.now().toUtc().toIso8601String(),
       );
 
-      await LocalDatabase.instance.insertPoint(point);
+      await LocalDatabase.instance.insertPoint(point,_currentSessionId!);
 
       if (mounted) {
         setState(() {
           _currentPosition = newPos;
           _polylineCoordinates.add(newPos);
+          _currentSpeedKmph = speedKmph;
+          _currentAccuracy = accuracy; // Update UI accuracy
         });
-        _mapController.move(newPos, 17);
       }
     });
   }
 
-  void _startBackgroundSync() {
-    _syncTimer = Timer.periodic(
-      const Duration(seconds: 5),
-      (_) => _performSync(),
-    );
-  }
-
-  void _startMapMatching() {
-    _snapTimer = Timer.periodic(
-      const Duration(seconds: 10),
-      (_) => _refinePath(),
-    );
-  }
-
   Future<void> _refinePath() async {
     if (_polylineCoordinates.length < 5) return;
-
-    final connectivity = await Connectivity().checkConnectivity();
-    if (connectivity.contains(ConnectivityResult.none)) return;
-
     try {
       final snapped = await sl<MapMatchingService>().getSnappedRoute(
         _polylineCoordinates,
       );
       if (mounted && snapped.isNotEmpty) {
-        setState(() {
-          _smoothCoordinates = snapped;
-        });
+        setState(() => _smoothCoordinates = snapped);
       }
-    } catch (e) {
-      debugPrint("Map matching failed (ignoring): $e");
-    }
+    } catch (_) {}
   }
 
   Future<void> _performSync() async {
     final connectivity = await Connectivity().checkConnectivity();
-    final bool hasNoInternet = connectivity.contains(ConnectivityResult.none);
-
-    if (hasNoInternet) {
-      if (!_isOffline && mounted) setState(() => _isOffline = true);
+    if (connectivity.contains(ConnectivityResult.none)) {
+      if (!isOffline && mounted) setState(() => isOffline = true);
       return;
     }
+    if (isOffline && mounted) setState(() => isOffline = false);
 
-    if (_isOffline && mounted) setState(() => _isOffline = false);
-
-    final List<Map<String, dynamic>> rawData = await LocalDatabase.instance
-        .getUnsyncedRaw(50);
+    final rawData = await LocalDatabase.instance.getUnsyncedRaw(50);
     if (rawData.isEmpty) return;
 
-    final List<data.LocationPoint> pointsToSync = rawData
-        .map((e) => data.LocationPoint.fromJson(e))
-        .toList();
-    final List<int> pointIds = rawData.map((e) => e['id'] as int).toList();
+    final points = rawData.map((e) => data.LocationPoint.fromJson(e)).toList();
+    final ids = rawData.map((e) => e['id'] as int).toList();
 
     try {
-      final result = await sl<ApiService>().sendLocationData(pointsToSync);
-
-      if (result['success']) {
-        await LocalDatabase.instance.clearPointsByIds(pointIds);
-        debugPrint(
-          "SYNC: Successfully uploaded and cleared ${pointIds.length} points.",
-        );
-      }
-    } catch (e) {
-      log(
-        "SYNC ERROR: Failed to upload batch. Data remains in local storage. $e",
-      );
-    }
-  }
-
-  void _startTimer() {
-    _sessionTimer = Timer.periodic(const Duration(seconds: 1), (_) {
-      setState(() => _sessionDuration += const Duration(seconds: 1));
-    });
+      final result = await sl<ApiService>().sendLocationData(points);
+      if (result['success']) await LocalDatabase.instance.clearPointsByIds(ids);
+    } catch (_) {}
   }
 
   void _showSnack(String msg, {bool isError = true}) {
@@ -291,16 +283,6 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
     );
   }
 
-  void _showProfileSheet() {
-    showModalBottomSheet(
-      context: context,
-      backgroundColor: Colors.transparent,
-      isScrollControlled: true,
-      builder: (_) => ProfileSheet(username: _username),
-    );
-  }
-
-  // --- 4. BUILD ---
   @override
   Widget build(BuildContext context) {
     return BlocListener<AuthBloc, AuthState>(
@@ -312,27 +294,35 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
       child: Scaffold(
         body: Stack(
           children: [
-            // 1. Map
-            MapBackground(
-              mapController: _mapController,
-              polylineCoordinates: _polylineCoordinates,
-              currentPosition: _currentPosition,
+            YandexMapBackground(
+              polylineCoordinates: _smoothCoordinates.isNotEmpty
+                  ? _smoothCoordinates
+                  : _polylineCoordinates,
               currentHeading: _currentHeading,
+              currentPosition: _currentPosition,
             ),
-            // 2. HUD
+
+            // FIX: Pass the new stats variables here!
             TrackingHUD(
-              isTracking: _isTracking,
-              isOffline: _isOffline,
-              sessionDuration: _sessionDuration,
+              isTracking: isTracking,
+              isOffline: isOffline,
+              sessionDuration: sessionDuration,
               username: _username,
-              onProfileTap: _showProfileSheet,
+              // New params:
+              distanceKm: _totalDistanceMeters / 1000.0, // Convert to KM
+              speedKmph: _currentSpeedKmph,
+              accuracy: _currentAccuracy,
+              onProfileTap: () => showModalBottomSheet(
+                context: context,
+                backgroundColor: Colors.transparent,
+                builder: (_) => ProfileSheet(username: _username),
+              ),
             ),
           ],
         ),
-        // 3. FAB
         floatingActionButton: TrackingFab(
-          isTracking: _isTracking,
-          isBusy: _isBusy,
+          isTracking: isTracking,
+          isBusy: isBusy,
           onPressed: _toggleTracking,
         ),
         floatingActionButtonLocation: FloatingActionButtonLocation.centerFloat,

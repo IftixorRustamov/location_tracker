@@ -45,8 +45,8 @@ class _LoginScreenState extends State<LoginScreen> {
   Widget build(BuildContext context) {
     return BlocConsumer<AuthBloc, AuthState>(
       listener: (context, state) {
-        if (state is LoginSuccess) {
-          Navigator.pushReplacementNamed(context, '/home');
+        if (state is Authenticated) {
+          Navigator.pushNamedAndRemoveUntil(context, '/home', (route) => false);
         } else if (state is AuthFailure) {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(content: Text(state.message), backgroundColor: Colors.red),
