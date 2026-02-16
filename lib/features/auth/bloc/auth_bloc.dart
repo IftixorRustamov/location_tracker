@@ -1,6 +1,7 @@
 import 'package:flutter/cupertino.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:jwt_decoder/jwt_decoder.dart';
+import 'package:location_tracker/core/constants/secondary.dart';
 import 'package:location_tracker/core/services/api_service.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'auth_event.dart';
@@ -19,8 +20,8 @@ class AuthBloc extends Bloc<AuthEvent, AuthState> {
 
   Future<void> _onAppStarted(AppStarted event, Emitter<AuthState> emit) async {
     final prefs = await SharedPreferences.getInstance();
-    final token = prefs.getString('accessToken');
-    final role = prefs.getString('userRole') ?? 'USER';
+    final token = prefs.getString(SecondaryConstants.accessToken);
+    final role = prefs.getString(SecondaryConstants.userRole) ?? 'USER';
 
     if (token != null && !JwtDecoder.isExpired(token)) {
       emit(Authenticated(token: token, role: role));
@@ -80,8 +81,8 @@ class AuthBloc extends Bloc<AuthEvent, AuthState> {
 
           // Save & Emit
           final prefs = await SharedPreferences.getInstance();
-          await prefs.setString('accessToken', token);
-          await prefs.setString('userRole', userRole);
+          await prefs.setString(SecondaryConstants.accessToken, token);
+          await prefs.setString(SecondaryConstants.userRole, userRole);
 
           emit(Authenticated(token: token, role: userRole));
         } else {

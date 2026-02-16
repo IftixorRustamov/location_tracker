@@ -1,10 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:latlong2/latlong.dart';
-import 'package:location_tracker/core/services/local_db_service.dart';
-import 'package:location_tracker/features/tracking/screens/session_map_screen.dart';
-// Note: Ensure this model import points to where you defined your 'Session' model.
-// If you don't have a specific Session model, I assume the DB returns a Map or a similar object.
-// For this example, I will assume the DB returns a list of Maps or a generic Session class.
+import 'package:location_tracker/core/constants/secondary.dart';
+import 'package:location_tracker/core/services/local_db_service.dart'; // Adjust path
+import 'package:location_tracker/features/tracking/screens/session_map_screen.dart'; // Adjust path
+import 'package:location_tracker/features/tracking/widgets/history/history_empty_state.dart';
+import 'package:location_tracker/features/tracking/widgets/history/trip_history_card.dart';
 
 class HistoryScreen extends StatefulWidget {
   const HistoryScreen({super.key});
@@ -14,7 +14,6 @@ class HistoryScreen extends StatefulWidget {
 }
 
 class _HistoryScreenState extends State<HistoryScreen> {
-  // Store the list of sessions here
   List<Map<String, dynamic>> _sessions = [];
   bool _isLoading = true;
 
@@ -24,146 +23,128 @@ class _HistoryScreenState extends State<HistoryScreen> {
     _loadSessions();
   }
 
-  /// Fetch all unique sessions from the database
   Future<void> _loadSessions() async {
-    // We assume your LocalDatabase has a method like 'getAllSessions'
-    // If not, you might be grouping by 'sessionId' or similar logic.
-    // This is a placeholder for however you retrieve the list of trips.
+    await Future.delayed(const Duration(milliseconds: 300));
+
     final sessions = await LocalDatabase.instance.getAllSessions();
 
     if (mounted) {
       setState(() {
-        _sessions = sessions;
+        _sessions = List.from(sessions.reversed);
         _isLoading = false;
       });
     }
   }
 
+  Future<void> _onSessionTap(
+    int sessionId,
+    DateTime date,
+    Map<String, dynamic> session,
+  ) async {
+    final pointsData = await LocalDatabase.instance.getPointsForSession(
+      sessionId,
+    );
+
+    if (!mounted) return;
+
+    if (pointsData.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text("No GPS data found for this trip."),
+          behavior: SnackBarBehavior.floating,
+          backgroundColor: Colors.orange,
+        ),
+      );
+      return;
+    }
+
+    final latLngList = pointsData.map((p) => LatLng(p.lat, p.lon)).toList();
+    final distanceKm = (session['distance'] as num?)?.toDouble() ?? 0.0;
+
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => SessionMapScreen(
+          sessionId: sessionId,
+          date: date,
+          routePoints: latLngList,
+          totalDistanceKm: distanceKm,
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(
-        title: const Text("Trip History", style: TextStyle(fontWeight: FontWeight.bold)),
-        backgroundColor: Colors.white,
-        foregroundColor: Colors.black,
-        elevation: 0,
-      ),
-      backgroundColor: Colors.grey[100],
-      body: _isLoading
-          ? const Center(child: CircularProgressIndicator())
-          : _sessions.isEmpty
-          ? _buildEmptyState()
-          : ListView.builder(
-        padding: const EdgeInsets.all(16),
-        itemCount: _sessions.length,
-        itemBuilder: (context, index) {
-          // Sorting newest first
-          final session = _sessions[_sessions.length - 1 - index];
-
-          // Parsing data (Adjust keys based on your actual DB schema)
-          final int sessionId = session['id'] as int;
-          // Handle timestamp parsing safely
-          final String timestampStr = session['timestamp'] ?? DateTime.now().toIso8601String();
-          final DateTime date = DateTime.tryParse(timestampStr) ?? DateTime.now();
-
-          // Optional: If you stored distance/duration in DB, use it. Otherwise 0.
-          // final double distance = session['distance'] ?? 0.0;
-
-          return Card(
-            elevation: 2,
-            margin: const EdgeInsets.only(bottom: 12),
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-            child: ListTile(
-              contentPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
-              leading: Container(
-                padding: const EdgeInsets.all(10),
-                decoration: BoxDecoration(
-                  color: Colors.blue.withOpacity(0.1),
-                  shape: BoxShape.circle,
-                ),
-                child: const Icon(Icons.directions_car, color: Colors.blue),
-              ),
+      backgroundColor: const Color(0xFFF8F9FA), // Light grey background
+      body: CustomScrollView(
+        physics: const BouncingScrollPhysics(),
+        slivers: [
+          // 1. Collapsible App Bar
+          const SliverAppBar(
+            expandedHeight: 100.0,
+            floating: true,
+            pinned: true,
+            backgroundColor: Colors.white,
+            elevation: 0,
+            iconTheme: IconThemeData(color: Colors.black87),
+            flexibleSpace: FlexibleSpaceBar(
+              titlePadding: EdgeInsets.only(left: 16, bottom: 16),
               title: Text(
-                "Trip #$sessionId",
-                style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
-              ),
-              subtitle: Padding(
-                padding: const EdgeInsets.only(top: 6.0),
-                child: Text(
-                  _formatDate(date),
-                  style: TextStyle(color: Colors.grey[600], fontSize: 13),
+                "Trip History",
+                style: TextStyle(
+                  color: Colors.black87,
+                  fontWeight: FontWeight.bold,
+                  fontSize: 20,
                 ),
               ),
-              trailing: const Icon(Icons.arrow_forward_ios, size: 16, color: Colors.grey),
-
-              // --- ON TAP LOGIC ---
-              onTap: () async {
-                // Show loading indicator if query is slow?
-                // Ideally, show a quick loader or just await.
-
-                // 1. Fetch points for this session
-                final points = await LocalDatabase.instance.getPointsForSession(sessionId);
-
-                if (points.isEmpty) {
-                  if (mounted) {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(content: Text("No location data found for this trip.")),
-                    );
-                  }
-                  return;
-                }
-
-                // 2. Convert to LatLng
-                final latLngList = points.map((p) => LatLng(p.lat, p.lon)).toList();
-
-                // 3. Navigate
-                if (!context.mounted) return;
-                Navigator.push(
-                  context,
-                  MaterialPageRoute(
-                    builder: (_) => SessionMapScreen(
-                      sessionId: sessionId,
-                      date: date,
-                      routePoints: latLngList,
-                      // Pass stored distance if you have it, else 0.0 to let screen calc it
-                      totalDistanceKm: 0.0,
-                    ),
-                  ),
-                );
-              },
             ),
-          );
-        },
-      ),
-    );
-  }
-
-  Widget _buildEmptyState() {
-    return Center(
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Icon(Icons.history, size: 80, color: Colors.grey[300]),
-          const SizedBox(height: 16),
-          Text(
-            "No trips yet",
-            style: TextStyle(fontSize: 18, color: Colors.grey[600], fontWeight: FontWeight.bold),
           ),
-          const SizedBox(height: 8),
-          const Text("Start a tracking session to see it here.", style: TextStyle(color: Colors.grey)),
+
+          // 2. List Content
+          if (_isLoading)
+            SliverFillRemaining(
+              child: Center(
+                child: CircularProgressIndicator(
+                  color: SecondaryConstants.kPrimaryGreen,
+                ),
+              ),
+            )
+          else if (_sessions.isEmpty)
+            const SliverFillRemaining(child: HistoryEmptyState())
+          else
+            SliverPadding(
+              padding: const EdgeInsets.all(16),
+              sliver: SliverList(
+                delegate: SliverChildBuilderDelegate((context, index) {
+                  final session = _sessions[index];
+                  final int id = session['id'] as int;
+                  final String ts = session['timestamp'] ?? '';
+                  final DateTime date = DateTime.tryParse(ts) ?? DateTime.now();
+
+                  // Staggered Animation
+                  return TweenAnimationBuilder<double>(
+                    tween: Tween(begin: 0, end: 1),
+                    duration: Duration(milliseconds: 400 + (index * 100)),
+                    curve: Curves.easeOutQuad,
+                    builder: (context, value, child) {
+                      return Transform.translate(
+                        offset: Offset(0, 30 * (1 - value)), // Slide up
+                        child: Opacity(opacity: value, child: child),
+                      );
+                    },
+                    child: TripHistoryCard(
+                      sessionId: id,
+                      date: date,
+                      onTap: () => _onSessionTap(id, date, session),
+                    ),
+                  );
+                }, childCount: _sessions.length),
+              ),
+            ),
         ],
       ),
     );
-  }
-
-  String _formatDate(DateTime dt) {
-    // Simple formatter to avoid extra dependencies, or use package:intl
-    final List<String> months = [
-      'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'
-    ];
-    final String month = months[dt.month - 1];
-    final String hour = dt.hour.toString().padLeft(2, '0');
-    final String minute = dt.minute.toString().padLeft(2, '0');
-    return "$month ${dt.day}, ${dt.year} at $hour:$minute";
   }
 }

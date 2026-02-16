@@ -1,5 +1,5 @@
-import 'dart:developer';
 import 'package:dio/dio.dart';
+import 'package:flutter/foundation.dart';
 import 'package:location_tracker/core/constants/api_constants.dart';
 import 'package:location_tracker/core/interceptors/auth_interceptor.dart';
 import 'package:pretty_dio_logger/pretty_dio_logger.dart';
@@ -29,7 +29,7 @@ class DioClient {
         error: true,
         compact: false,
         maxWidth: 90,
-        logPrint: (object) => log(object.toString(), name: "LOCATION API"),
+        logPrint: (object) => debugPrint(object.toString()),
       ),
     ]);
   }

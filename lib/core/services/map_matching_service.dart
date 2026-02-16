@@ -1,6 +1,5 @@
-import 'dart:developer';
-
 import 'package:dio/dio.dart';
+import 'package:flutter/foundation.dart';
 import 'package:latlong2/latlong.dart';
 
 class MapMatchingService {
@@ -55,7 +54,7 @@ class MapMatchingService {
         }
       }
     } catch (e) {
-      log("OSRM Map Match Failed: $e");
+      debugPrint("OSRM Map Match Failed: $e");
     }
 
     return rawPoints;

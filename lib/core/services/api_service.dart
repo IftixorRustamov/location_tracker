@@ -1,17 +1,14 @@
-import 'dart:developer';
-
 import 'package:dio/dio.dart';
+import 'package:logger/logger.dart';
 import 'package:location_tracker/core/constants/api_constants.dart';
+import 'package:location_tracker/core/constants/secondary.dart';
 import 'package:location_tracker/data/models/location_point.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 class ApiService {
+  static final _log = Logger();
   final Dio _dio;
   final SharedPreferences _prefs;
-
-  static const String _kAccessToken = 'accessToken';
-  static const String _kRefreshToken = 'refreshToken';
-  static const String _kUsername = 'username';
 
   ApiService(this._dio, this._prefs);
 
@@ -20,9 +17,8 @@ class ApiService {
       final response = await request;
       return {'success': true, 'data': response.data};
     } on DioException catch (e) {
-      log(
+      _log.w(
         "API ERROR [${e.response?.statusCode}]: ${e.requestOptions.path}",
-        name: "API",
       );
       return {
         'success': false,
@@ -31,19 +27,19 @@ class ApiService {
     }
   }
 
+  //* tested
   Future<Map<String, dynamic>> register({
     required String name,
     required String username,
     required String password,
-  }) async {
-    return _handleRequest(
-      _dio.post(
-        ApiConstants.register,
-        data: {'name': name, 'username': username, 'password': password},
-      ),
-    );
-  }
+  }) async => _handleRequest(
+    _dio.post(
+      ApiConstants.register,
+      data: {'name': name, 'username': username, 'password': password},
+    ),
+  );
 
+  //* tested
   Future<Map<String, dynamic>> login({
     required String username,
     required String password,
@@ -59,30 +55,48 @@ class ApiService {
       final data = response['data']['data'];
       if (data != null) {
         await Future.wait([
-          _prefs.setString(_kAccessToken, data['accessToken'] ?? ''),
-          _prefs.setString(_kRefreshToken, data['refreshToken'] ?? ''),
-          _prefs.setString(_kUsername, username),
+          _prefs.setString(
+            SecondaryConstants.accessToken,
+            data['accessToken'] ?? '',
+          ),
+          _prefs.setString(
+            SecondaryConstants.refreshToken,
+            data['refreshToken'] ?? '',
+          ),
+          _prefs.setString(SecondaryConstants.username, username),
         ]);
-        log("LOGIN: Tokens saved.", name: "API");
+        _log.i("LOGIN: Tokens saved.");
       }
     }
     return response;
   }
 
+  //* tested
   Future<Map<String, dynamic>> logout() async {
     try {
-      return await _handleRequest(_dio.post(ApiConstants.logout));
+      final refreshToken = _prefs.getString(SecondaryConstants.refreshToken);
+      final accessToken = _prefs.getString(SecondaryConstants.accessToken);
+
+      return await _handleRequest(
+        _dio.post(
+          ApiConstants.logout,
+          data: {'refreshToken': refreshToken},
+          options: Options(headers: {'Authorization': 'Bearer $accessToken'}),
+        ),
+      );
+    } catch (e) {
+      return {'success': true};
     } finally {
       await _prefs.clear();
-      log("LOGOUT: Local data cleared.", name: "API");
+      _log.i("LOGOUT: Local data cleared.");
     }
   }
 
   Future<bool> refreshToken() async {
-    final refreshToken = _prefs.getString(_kRefreshToken);
+    final refreshToken = _prefs.getString(SecondaryConstants.refreshToken);
 
     if (refreshToken == null || refreshToken.isEmpty) {
-      log("REFRESH: No token found.", name: "API");
+      _log.w("REFRESH: No token found.");
       return false;
     }
 
@@ -94,7 +108,7 @@ class ApiService {
         ),
       );
 
-      log("REFRESH: Requesting new token...", name: "API");
+      _log.i("REFRESH: Requesting new token...");
 
       final response = await tempDio.post(
         ApiConstants.refresh,
@@ -107,16 +121,16 @@ class ApiService {
         final newRefresh = responseData['refreshToken'];
 
         if (newAccess != null) {
-          await _prefs.setString(_kAccessToken, newAccess);
+          await _prefs.setString(SecondaryConstants.accessToken, newAccess);
           if (newRefresh != null) {
-            await _prefs.setString(_kRefreshToken, newRefresh);
+            await _prefs.setString(SecondaryConstants.refreshToken, newRefresh);
           }
-          log("TOKEN REFRESH: Success!");
+          _log.i("TOKEN REFRESH: Success!");
           return true;
         }
       }
     } catch (e) {
-      log("REFRESH FAILED: $e", name: "API");
+      _log.w("REFRESH FAILED: $e");
     }
     return false;
   }
@@ -138,22 +152,52 @@ class ApiService {
     );
   }
 
-  Future<Map<String, dynamic>> startTrackingSession() =>
-      _handleRequest(_dio.post(ApiConstants.startTracking));
+  //* tested
+  Future<Map<String, dynamic>> startTrackingSession() async {
+    try {
+      final response = await _dio.post(ApiConstants.startTracking);
 
+      return {
+        'success': true,
+        'data': response.data,
+        'statusCode': response.statusCode,
+      };
+    } on DioException catch (e) {
+      return {
+        'success': false,
+        'statusCode': e.response?.statusCode,
+        'message': e.response?.data['message'] ?? 'Connection failed',
+      };
+    }
+  }
+
+  //* tested
   Future<Map<String, dynamic>> stopTrackingSession() =>
       _handleRequest(_dio.post(ApiConstants.stopTracking));
 
-  Future<Map<String, dynamic>> sendLocationData(List<LocationPoint> points) {
-    final data = {'points': points.map((p) => p.toJson()).toList()};
-
-    return _handleRequest(_dio.post(ApiConstants.updateLocation, data: data));
+  Future<Map<String, dynamic>> sendLocationData(
+    List<LocationPoint> points,
+  ) async {
+    try {
+      return await _handleRequest(
+        _dio.post(
+          ApiConstants.updateLocation,
+          data: {"points": points.map((p) => p.toJson()).toList()},
+        ),
+      );
+    } on DioException catch (e) {
+      return {
+        'success': false,
+        'statusCode': e.response?.statusCode,
+        'message': e.response?.data['message'] ?? 'Failed to sync',
+      };
+    }
   }
 
   bool isLoggedIn() {
-    final token = _prefs.getString(_kAccessToken);
+    final token = _prefs.getString(SecondaryConstants.accessToken);
     return token != null && token.isNotEmpty;
   }
 
-  String? getUsername() => _prefs.getString(_kUsername);
+  String? getUsername() => _prefs.getString(SecondaryConstants.username);
 }

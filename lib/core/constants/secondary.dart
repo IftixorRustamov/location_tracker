@@ -3,6 +3,12 @@ import 'package:flutter/material.dart';
 abstract class SecondaryConstants {
   // Assets
   static const String userArrow = 'assets/user_arrow.png';
+  static const String carIcon = 'assets/car_icon.png'; // Add this
+
+  static const String accessToken = 'accessToken';
+  static const String refreshToken = 'refreshToken';
+  static const String userRole = 'userRole';
+  static const String username = 'username';
 
   // Colors
   static const Color kPrimaryGreen = Color(0xFF4CAF50);
