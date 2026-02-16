@@ -1,15 +1,12 @@
 import 'package:flutter/material.dart';
-import 'package:flutter_bloc/flutter_bloc.dart';
-import 'package:location_tracker/core/constants/api_constants.dart';
 import 'package:location_tracker/core/constants/secondary.dart';
+import 'package:location_tracker/core/di/injection_container.dart';
 import 'package:location_tracker/core/services/admin_api_service.dart';
 import 'package:location_tracker/features/admin/screens/admin_live_map_screen.dart';
 import 'package:location_tracker/features/admin/screens/user_management_screen.dart';
 import 'package:location_tracker/features/admin/widgets/dashboard/dashboard_empty_state.dart';
 import 'package:location_tracker/features/admin/widgets/dashboard/dashboard_summary_card.dart';
 import 'package:location_tracker/features/admin/widgets/dashboard/session_card.dart';
-import 'package:location_tracker/features/auth/bloc/auth_bloc.dart';
-import 'package:location_tracker/features/auth/bloc/auth_state.dart';
 
 class AdminDashboardScreen extends StatefulWidget {
   const AdminDashboardScreen({super.key});
@@ -28,12 +25,7 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
   @override
   void initState() {
     super.initState();
-    final authState = context.read<AuthBloc>().state;
-    String? token;
-    if (authState is Authenticated) {
-      token = authState.token;
-    }
-    _api = AdminApiService(baseUrl: ApiConstants.baseUrl, token: token);
+    _api = sl<AdminApiService>();
     _fetchSessions();
   }
 
@@ -79,13 +71,7 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
   void _navigateToLiveMap(AdminSession session) {
     Navigator.push(
       context,
-      MaterialPageRoute(
-        builder: (_) => AdminLiveMapScreen(
-          sessionId: session.id,
-          driverName: session.name,
-          apiService: _api,
-        ),
-      ),
+      MaterialPageRoute(builder: (_) => AdminLiveMapScreen(apiService: _api)),
     );
   }
 
@@ -97,7 +83,10 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
           gradient: LinearGradient(
             begin: Alignment.topCenter,
             end: Alignment.bottomCenter,
-            colors: [SecondaryConstants.kBackgroundStart, SecondaryConstants.kBackgroundEnd],
+            colors: [
+              SecondaryConstants.kBackgroundStart,
+              SecondaryConstants.kBackgroundEnd,
+            ],
           ),
         ),
         child: NestedScrollView(
@@ -106,9 +95,13 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
               expandedHeight: 180.0,
               floating: false,
               pinned: true,
-              backgroundColor: innerBoxIsScrolled ? Colors.white : Colors.transparent,
+              backgroundColor: innerBoxIsScrolled
+                  ? Colors.white
+                  : Colors.transparent,
               elevation: innerBoxIsScrolled ? 2 : 0,
-              iconTheme: const IconThemeData(color: SecondaryConstants.kBlackText),
+              iconTheme: const IconThemeData(
+                color: SecondaryConstants.kBlackText,
+              ),
               actions: [
                 Container(
                   margin: const EdgeInsets.only(right: 16),
@@ -116,16 +109,25 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
                     color: Colors.white,
                     shape: BoxShape.circle,
                     boxShadow: [
-                      BoxShadow(color: Colors.black.withOpacity(0.05), blurRadius: 10)
+                      BoxShadow(
+                        color: Colors.black.withOpacity(0.05),
+                        blurRadius: 10,
+                      ),
                     ],
                   ),
                   child: IconButton(
-                    icon: const Icon(Icons.people, color: SecondaryConstants.kPrimaryGreen),
+                    icon: const Icon(
+                      Icons.people,
+                      color: SecondaryConstants.kPrimaryGreen,
+                    ),
                     tooltip: "Manage Team",
                     onPressed: () {
                       Navigator.push(
                         context,
-                        MaterialPageRoute(builder: (_) => UserManagementScreen(apiService: _api)),
+                        MaterialPageRoute(
+                          builder: (_) =>
+                              UserManagementScreen(apiService: _api),
+                        ),
                       );
                     },
                   ),
@@ -150,7 +152,9 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
                       child: Icon(
                         Icons.local_shipping_outlined,
                         size: 140,
-                        color: SecondaryConstants.kPrimaryGreen.withOpacity(0.05),
+                        color: SecondaryConstants.kPrimaryGreen.withOpacity(
+                          0.05,
+                        ),
                       ),
                     ),
                     Positioned(
@@ -169,35 +173,43 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
             ),
           ],
           body: _isLoading
-              ? const Center(child: CircularProgressIndicator(color: SecondaryConstants.kPrimaryGreen))
-              : RefreshIndicator(
-            color: SecondaryConstants.kPrimaryGreen,
-            onRefresh: _fetchSessions,
-            child: _sessions.isEmpty
-                ? DashboardEmptyState(onRefresh: _fetchSessions)
-                : ListView.separated(
-              padding: const EdgeInsets.fromLTRB(16, 20, 16, 80),
-              itemCount: _sessions.length,
-              separatorBuilder: (c, i) => const SizedBox(height: 12),
-              itemBuilder: (context, index) {
-                return TweenAnimationBuilder<double>(
-                  tween: Tween(begin: 0, end: 1),
-                  duration: Duration(milliseconds: 300 + (index * 50)),
-                  curve: Curves.easeOut,
-                  builder: (context, value, child) {
-                    return Transform.translate(
-                      offset: Offset(0, 20 * (1 - value)),
-                      child: Opacity(opacity: value, child: child),
-                    );
-                  },
-                  child: SessionCard(
-                    session: _sessions[index],
-                    onTap: () => _navigateToLiveMap(_sessions[index]),
+              ? const Center(
+                  child: CircularProgressIndicator(
+                    color: SecondaryConstants.kPrimaryGreen,
                   ),
-                );
-              },
-            ),
-          ),
+                )
+              : RefreshIndicator(
+                  color: SecondaryConstants.kPrimaryGreen,
+                  onRefresh: _fetchSessions,
+                  child: _sessions.isEmpty
+                      ? DashboardEmptyState(onRefresh: _fetchSessions)
+                      : ListView.separated(
+                          padding: const EdgeInsets.fromLTRB(16, 20, 16, 80),
+                          itemCount: _sessions.length,
+                          separatorBuilder: (c, i) =>
+                              const SizedBox(height: 12),
+                          itemBuilder: (context, index) {
+                            return TweenAnimationBuilder<double>(
+                              tween: Tween(begin: 0, end: 1),
+                              duration: Duration(
+                                milliseconds: 300 + (index * 50),
+                              ),
+                              curve: Curves.easeOut,
+                              builder: (context, value, child) {
+                                return Transform.translate(
+                                  offset: Offset(0, 20 * (1 - value)),
+                                  child: Opacity(opacity: value, child: child),
+                                );
+                              },
+                              child: SessionCard(
+                                session: _sessions[index],
+                                onTap: () =>
+                                    _navigateToLiveMap(_sessions[index]),
+                              ),
+                            );
+                          },
+                        ),
+                ),
         ),
       ),
     );

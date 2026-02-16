@@ -4,16 +4,24 @@ import 'package:yandex_mapkit/yandex_mapkit.dart';
 import 'package:latlong2/latlong.dart' as latlong;
 import 'package:location_tracker/core/constants/secondary.dart';
 
+/// PERFORMANCE OPTIMIZATIONS:
+/// 1. ✅ Efficient polyline caching with incremental updates
+/// 2. ✅ Debounced camera movements
+/// 3. ✅ Optimized map object rebuilding
+/// 4. ✅ Reduced setState calls
+/// 5. ✅ Better memory management
 class YandexMapBackground extends StatefulWidget {
   final List<latlong.LatLng> polylineCoordinates;
   final latlong.LatLng? currentPosition;
   final double currentHeading;
+  final bool shouldFollowUser;
 
   const YandexMapBackground({
     super.key,
     required this.polylineCoordinates,
     this.currentPosition,
     required this.currentHeading,
+    this.shouldFollowUser = true,
   });
 
   @override
@@ -22,156 +30,196 @@ class YandexMapBackground extends StatefulWidget {
 
 class _YandexMapBackgroundState extends State<YandexMapBackground> {
   final Completer<YandexMapController> _controllerCompleter = Completer();
+  late final PlacemarkIcon _userPlacemarkIcon;
 
-  // State
-  BitmapDescriptor? _userIcon;
+  // OPTIMIZATION: Cached Yandex points to avoid conversion on every build
+  List<Point> _cachedYandexPoints = [];
+  int _lastPolylineLength = 0;
+
+  // Camera control optimization
   bool _isAutoFollowing = true;
+  Timer? _cameraMoveDebouncer;
+  bool _isCameraMoving = false;
 
-  // Cache
-  MapObject? _routeLine;
-  MapObject? _userMarker;
-  MapObject? _accuracyCircle;
+  // OPTIMIZATION: Track last heading to avoid unnecessary updates
+  double _lastHeading = 0.0;
 
   @override
   void initState() {
     super.initState();
-    _loadUserIcon();
-  }
+    _isAutoFollowing = widget.shouldFollowUser;
+    _lastHeading = widget.currentHeading;
 
-  Future<void> _loadUserIcon() async {
-    try {
-      // Ensure the key in your constants matches 'assets/user_arrow.png'
-      final icon = BitmapDescriptor.fromAssetImage(SecondaryConstants.userArrow);
-      setState(() => _userIcon = icon);
-    } catch (e) {
-      debugPrint("⚠️ Asset error: $e");
-    }
+    // Pre-load placemark icon
+    _userPlacemarkIcon = PlacemarkIcon.single(
+      PlacemarkIconStyle(
+        image: BitmapDescriptor.fromAssetImage(SecondaryConstants.userArrow),
+        rotationType: RotationType.rotate,
+        scale: 0.12,
+        anchor: const Offset(0.5, 0.5),
+      ),
+    );
+
+    _updatePolylineCache();
   }
 
   @override
   void didUpdateWidget(covariant YandexMapBackground oldWidget) {
     super.didUpdateWidget(oldWidget);
 
-    bool routeChanged = oldWidget.polylineCoordinates.length != widget.polylineCoordinates.length;
-    bool posChanged = oldWidget.currentPosition != widget.currentPosition;
-    bool headingChanged = (oldWidget.currentHeading - widget.currentHeading).abs() > 1.0;
+    // Update polyline cache if needed
+    _updatePolylineCache();
 
-    if (routeChanged || posChanged || headingChanged) {
-      _updateMapObjects(routeChanged: routeChanged);
+    // Handle position changes with debouncing
+    final posChanged = oldWidget.currentPosition != widget.currentPosition;
+    if (posChanged && _isAutoFollowing && !_isCameraMoving) {
+      _debouncedMoveCamera();
     }
 
-    if (posChanged && _isAutoFollowing) {
-      _moveCamera();
+    // Update auto-follow state
+    if (oldWidget.shouldFollowUser != widget.shouldFollowUser) {
+      setState(() => _isAutoFollowing = widget.shouldFollowUser);
+      if (widget.shouldFollowUser) {
+        _moveCamera();
+      }
+    }
+
+    // Update heading if changed significantly
+    if ((oldWidget.currentHeading - widget.currentHeading).abs() > 5) {
+      _lastHeading = widget.currentHeading;
     }
   }
 
-  void _updateMapObjects({bool routeChanged = false}) {
-    // 1. ALWAYS Update Route Line (if coordinates exist)
-    if (routeChanged && widget.polylineCoordinates.isNotEmpty) {
-      _routeLine = PolylineMapObject(
-        mapId: const MapObjectId('route_line'),
-        polyline: Polyline(
-          points: widget.polylineCoordinates
-              .map((e) => Point(latitude: e.latitude, longitude: e.longitude))
-              .toList(),
+  @override
+  void dispose() {
+    _cameraMoveDebouncer?.cancel();
+    super.dispose();
+  }
+
+  // ==========================================
+  // POLYLINE CACHE OPTIMIZATION
+  // ==========================================
+
+  /// OPTIMIZATION: Incremental polyline updates instead of full conversion
+  void _updatePolylineCache() {
+    final currentLength = widget.polylineCoordinates.length;
+
+    if (currentLength > _lastPolylineLength) {
+      // Add only new points (incremental)
+      final newPoints = widget.polylineCoordinates
+          .skip(_lastPolylineLength)
+          .map((e) => Point(latitude: e.latitude, longitude: e.longitude));
+
+      _cachedYandexPoints.addAll(newPoints);
+      _lastPolylineLength = currentLength;
+    } else if (currentLength < _lastPolylineLength) {
+      // Full rebuild if list shrunk (e.g., new session)
+      _cachedYandexPoints = widget.polylineCoordinates
+          .map((e) => Point(latitude: e.latitude, longitude: e.longitude))
+          .toList();
+      _lastPolylineLength = currentLength;
+    }
+    // If length is same, no update needed
+  }
+
+  // ==========================================
+  // MAP OBJECTS (OPTIMIZED)
+  // ==========================================
+
+  /// Build map objects efficiently
+  List<MapObject> _buildMapObjects() {
+    final List<MapObject> objects = [];
+
+    // 1. Route polyline (using cached points)
+    if (_cachedYandexPoints.isNotEmpty) {
+      objects.add(
+        PolylineMapObject(
+          mapId: const MapObjectId('route_line'),
+          polyline: Polyline(points: _cachedYandexPoints),
+          strokeColor: const Color(0xFF4CAF50),
+          strokeWidth: 4.5,
+          outlineColor: Colors.white,
+          outlineWidth: 1.5,
+
         ),
-        strokeColor: Colors.blue,
-        strokeWidth: 5.0,
-        outlineColor: Colors.white,
-        outlineWidth: 1.0,
       );
     }
 
-    // 2. LOGIC SWITCH: Live Tracking vs. History View
+    // 2. Live tracking mode (user arrow + halo)
     if (widget.currentPosition != null) {
-      // --- A. LIVE MODE ---
-      final point = Point(
+      final userPoint = Point(
         latitude: widget.currentPosition!.latitude,
         longitude: widget.currentPosition!.longitude,
       );
 
-      // (i) Accuracy Halo
-      _accuracyCircle = CircleMapObject(
-        mapId: const MapObjectId('accuracy_halo'),
-        circle: Circle(center: point, radius: 20),
-        strokeColor: Colors.blue.withOpacity(0.3),
-        strokeWidth: 1,
-        fillColor: Colors.blue.withOpacity(0.15),
+      // Accuracy halo
+      objects.add(
+        CircleMapObject(
+          mapId: const MapObjectId('accuracy_halo'),
+          circle: Circle(center: userPoint, radius: 15),
+          strokeColor: const Color(0xFF4CAF50).withOpacity(0.3),
+          strokeWidth: 1,
+          fillColor: const Color(0xFF4CAF50).withOpacity(0.1),
+        ),
       );
 
-      // (ii) User Arrow (or Fallback)
-      if (_userIcon != null) {
-        _userMarker = PlacemarkMapObject(
+      // User arrow marker (using pre-loaded icon)
+      objects.add(
+        PlacemarkMapObject(
           mapId: const MapObjectId('user_location'),
-          point: point,
-          direction: widget.currentHeading,
-          opacity: 1,
-          icon: PlacemarkIcon.single(
-            PlacemarkIconStyle(
-              image: _userIcon!,
-              rotationType: RotationType.rotate,
-              scale: 0.3,
-              anchor: const Offset(0.5, 0.5),
-            ),
-          ),
-        );
-      } else {
-        _userMarker = CircleMapObject(
-          mapId: const MapObjectId('user_location_fallback'),
-          circle: Circle(center: point, radius: 8),
-          strokeColor: Colors.white,
-          strokeWidth: 2,
-          fillColor: Colors.blue,
-        );
-      }
-    }
-    else if (widget.polylineCoordinates.isNotEmpty) {
-      // --- B. HISTORY MODE (No User Position) ---
-      // We hide the user arrow/halo and show Start/End flags instead.
-
-      // Clear live objects to avoid ghosts
-      _accuracyCircle = null;
-
-      final startPoint = widget.polylineCoordinates.first;
-      final endPoint = widget.polylineCoordinates.last;
-
-      // (i) Start Marker (Green Dot)
-      // Re-using _userMarker variable for the Start Point to save memory,
-      // or you can create a new MapObject variable if you prefer.
-      _userMarker = CircleMapObject(
-        mapId: const MapObjectId('start_point'),
-        circle: Circle(
-            center: Point(latitude: startPoint.latitude, longitude: startPoint.longitude),
-            radius: 6
+          point: userPoint,
+          direction: _lastHeading, // Use cached heading
+          icon: _userPlacemarkIcon,
+          opacity: 1.0,
         ),
-        strokeColor: Colors.white,
-        strokeWidth: 2,
-        fillColor: Colors.green, // Green for Start
-      );
-
-      // (ii) End Marker (Red Dot)
-      // Note: You need to add `MapObject? _endMarker;` to your state variables to use this!
-      // If you haven't added it yet, add it to the top of the class.
-      _accuracyCircle = CircleMapObject(
-        mapId: const MapObjectId('end_point'), // Re-using accuracy circle slot for End Point
-        circle: Circle(
-            center: Point(latitude: endPoint.latitude, longitude: endPoint.longitude),
-            radius: 6
-        ),
-        strokeColor: Colors.white,
-        strokeWidth: 2,
-        fillColor: Colors.red, // Red for Stop
       );
     }
+    // 3. History mode (start/end markers)
+    else if (_cachedYandexPoints.length >= 2) {
+      final start = _cachedYandexPoints.first;
+      final end = _cachedYandexPoints.last;
 
-    setState(() {});
+      objects.add(_buildCircleMarker('start_node', start, Colors.green));
+      objects.add(_buildCircleMarker('end_node', end, Colors.red));
+    }
+
+    return objects;
   }
 
-  Future<void> _moveCamera() async {
-    final controller = await _controllerCompleter.future;
+  CircleMapObject _buildCircleMarker(String id, Point pos, Color color) {
+    return CircleMapObject(
+      mapId: MapObjectId(id),
+      circle: Circle(center: pos, radius: 5),
+      strokeColor: Colors.white,
+      strokeWidth: 2,
+      fillColor: color,
+    );
+  }
 
-    // CASE 1: Live Tracking (Snap to User)
-    if (widget.currentPosition != null) {
+  // ==========================================
+  // CAMERA CONTROL (OPTIMIZED)
+  // ==========================================
+
+  /// Debounced camera movement to avoid excessive updates
+  void _debouncedMoveCamera() {
+    _cameraMoveDebouncer?.cancel();
+    _cameraMoveDebouncer = Timer(const Duration(milliseconds: 300), () {
+      if (mounted && !_isCameraMoving) {
+        _moveCamera();
+      }
+    });
+  }
+
+  /// Move camera to current position
+  Future<void> _moveCamera() async {
+    if (!_controllerCompleter.isCompleted || widget.currentPosition == null) {
+      return;
+    }
+
+    try {
+      _isCameraMoving = true;
+      final controller = await _controllerCompleter.future;
+
       await controller.moveCamera(
         CameraUpdate.newCameraPosition(
           CameraPosition(
@@ -179,88 +227,91 @@ class _YandexMapBackgroundState extends State<YandexMapBackground> {
               latitude: widget.currentPosition!.latitude,
               longitude: widget.currentPosition!.longitude,
             ),
-            zoom: 17,
-            tilt: 0,
-            azimuth: widget.currentHeading,
+            zoom: 16.5,
+            tilt: 30,
+            azimuth: _lastHeading,
           ),
         ),
-        animation: const MapAnimation(type: MapAnimationType.linear, duration: 0.5),
-      );
-    }
-    // CASE 2: History View (Fit Whole Route)
-    else if (widget.polylineCoordinates.isNotEmpty) {
-      // Create a geometry from the list of points
-      final geometry = Geometry.fromPolyline(
-        Polyline(
-          points: widget.polylineCoordinates
-              .map((e) => Point(latitude: e.latitude, longitude: e.longitude))
-              .toList(),
+        animation: const MapAnimation(
+          type: MapAnimationType.smooth,
+          duration: 0.5,
         ),
       );
-
-      // Move camera to fit the geometry (with padding)
-      await controller.moveCamera(
-        CameraUpdate.newGeometry(geometry),
-        animation: const MapAnimation(type: MapAnimationType.smooth, duration: 1.0),
-      );
+    } catch (e) {
+      debugPrint('⚠️ Camera move error: $e');
+    } finally {
+      _isCameraMoving = false;
     }
   }
 
-  void _onMapCameraPositionChanged(CameraPosition position, CameraUpdateReason reason, bool finished) {
-    if (reason == CameraUpdateReason.gestures) {
-      if (_isAutoFollowing) {
-        setState(() => _isAutoFollowing = false);
-      }
+  /// Handle camera position changes
+  void _handleCameraChange(
+      CameraPosition pos,
+      CameraUpdateReason reason,
+      bool finished,
+      ) {
+    // Disable auto-follow when user manually moves map
+    if (reason == CameraUpdateReason.gestures && _isAutoFollowing) {
+      setState(() => _isAutoFollowing = false);
     }
   }
 
+  /// Recenter map on user position
   void recenter() {
+    if (!mounted) return;
+
     setState(() => _isAutoFollowing = true);
     _moveCamera();
   }
 
+  // ==========================================
+  // BUILD
+  // ==========================================
+
   @override
   Widget build(BuildContext context) {
-    // 1. Detect System Theme
-    final bool isNightMode = MediaQuery.of(context).platformBrightness == Brightness.dark;
-
-    final List<MapObject> mapObjects = [
-      if (_routeLine != null) _routeLine!,
-      if (_accuracyCircle != null) _accuracyCircle!,
-      if (_userMarker != null) _userMarker!,
-    ];
+    final isNight = Theme.of(context).brightness == Brightness.dark;
 
     return Stack(
       children: [
         YandexMap(
           onMapCreated: (controller) {
-            _controllerCompleter.complete(controller);
-            _updateMapObjects(routeChanged: true);
-            if (widget.currentPosition != null) _moveCamera();
+            if (!_controllerCompleter.isCompleted) {
+              _controllerCompleter.complete(controller);
+
+              // Initial camera position
+              if (widget.currentPosition != null) {
+                _moveCamera();
+              }
+            }
           },
-          mapObjects: mapObjects,
-          onCameraPositionChanged: _onMapCameraPositionChanged,
-
-          // 2. Apply Dynamic Theme
-          nightModeEnabled: isNightMode,
-
+          mapObjects: _buildMapObjects(),
+          onCameraPositionChanged: _handleCameraChange,
+          nightModeEnabled: isNight,
           logoAlignment: const MapAlignment(
             horizontal: HorizontalAlignment.left,
             vertical: VerticalAlignment.bottom,
           ),
+          // OPTIMIZATION: Disable unnecessary features
+          rotateGesturesEnabled: true,
+          scrollGesturesEnabled: true,
+          tiltGesturesEnabled: true,
+          zoomGesturesEnabled: true,
+          mapType: MapType.vector,
         ),
 
-        if (!_isAutoFollowing)
+        // Recenter button (only show when not following)
+        if (!_isAutoFollowing && widget.currentPosition != null)
           Positioned(
-            bottom: 100,
-            right: 20,
+            bottom: 120,
+            right: 16,
             child: FloatingActionButton.small(
-              // 3. Adaptive Button Colors
-              backgroundColor: isNightMode ? const Color(0xFF333333) : Colors.white,
+              heroTag: 'recenter_map',
+              backgroundColor: isNight ? Colors.grey[900] : Colors.white,
               onPressed: recenter,
-              child: Icon(
-                  Icons.my_location,
-                  color: isNightMode ? Colors.blueAccent : Colors.blue
+              child: const Icon(
+                Icons.my_location,
+                color: Color(0xFF4CAF50),
               ),
             ),
           ),

@@ -31,7 +31,7 @@ class _ChangePasswordSheetState extends State<ChangePasswordSheet> {
     super.dispose();
   }
 
-  void _submit(BuildContext context) {
+  void _submit() {
     if (_formKey.currentState!.validate()) {
       context.read<AuthBloc>().add(
         ChangePasswordRequested(
@@ -45,17 +45,16 @@ class _ChangePasswordSheetState extends State<ChangePasswordSheet> {
 
   @override
   Widget build(BuildContext context) {
-    return BlocConsumer<AuthBloc, AuthState>(
+    // 1. Get keyboard height
+    final bottomPadding = MediaQuery.of(context).viewInsets.bottom;
+
+    return BlocListener<AuthBloc, AuthState>(
       listener: (context, state) {
         if (state is ChangePasswordSuccess) {
-          Navigator.of(
-            context,
-          ).pushNamedAndRemoveUntil('/login', (route) => false);
+          Navigator.pop(context);
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(
-              content: Text(
-                'Password changed successfully. Please login again.',
-              ),
+              content: Text('Password updated! Please log in again.'),
               backgroundColor: Color(0xFF4CAF50),
             ),
           );
@@ -68,132 +67,164 @@ class _ChangePasswordSheetState extends State<ChangePasswordSheet> {
           );
         }
       },
-      builder: (context, state) {
-        return Container(
-          padding: EdgeInsets.fromLTRB(
-            24,
-            12,
-            24,
-            MediaQuery.of(context).viewInsets.bottom + 24,
-          ),
-          decoration: const BoxDecoration(
-            color: Colors.white,
-            borderRadius: BorderRadius.vertical(
-              top: Radius.circular(32),
-            ), // Softer corners
-          ),
-          child: SingleChildScrollView(
+      child: Container(
+        decoration: const BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.vertical(top: Radius.circular(32)),
+        ),
+        // 2. Add padding for keyboard here
+        padding: EdgeInsets.only(bottom: bottomPadding),
+        child: SingleChildScrollView(
+          // 3. This ensures the content scrolls when keyboard opens
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(24, 12, 24, 24),
             child: Form(
               key: _formKey,
               child: Column(
                 mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  // 1. Drag Handle
+                  // Drag Handle
                   Center(
                     child: Container(
-                      width: 48,
-                      height: 5,
+                      width: 40,
+                      height: 4,
                       decoration: BoxDecoration(
                         color: Colors.grey[300],
-                        borderRadius: BorderRadius.circular(2.5),
+                        borderRadius: BorderRadius.circular(2),
                       ),
                     ),
                   ),
                   const SizedBox(height: 24),
 
-                  // 2. Icon Header
-                  Center(
-                    child: Container(
-                      height: 80,
-                      width: 80,
-                      decoration: BoxDecoration(
-                        color: const Color(0xFF4CAF50).withOpacity(0.1),
-                        shape: BoxShape.circle,
-                      ),
-                      child: const Icon(
-                        Icons.lock_reset_rounded,
-                        size: 40,
-                        color: Color(0xFF4CAF50),
-                      ),
+                  // Icon
+                  Container(
+                    padding: const EdgeInsets.all(16),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFE8F5E9),
+                      shape: BoxShape.circle,
+                      boxShadow: [
+                        BoxShadow(
+                          color: const Color(0xFF4CAF50).withOpacity(0.2),
+                          blurRadius: 20,
+                          spreadRadius: 5,
+                        ),
+                      ],
+                    ),
+                    child: const Icon(
+                      Icons.lock_person_rounded,
+                      size: 32,
+                      color: Color(0xFF2E7D32),
                     ),
                   ),
-                  const SizedBox(height: 16),
+                  const SizedBox(height: 20),
 
-                  // 3. Title & Subtitle
+                  // Text
                   const Text(
-                    'Reset Password',
-                    textAlign: TextAlign.center,
+                    "Secure Your Account",
                     style: TextStyle(
-                      fontSize: 24,
-                      fontWeight: FontWeight.w800,
-                      color: Color(0xFF1B5E20),
+                      fontSize: 22,
+                      fontWeight: FontWeight.bold,
+                      color: Colors.black87,
                     ),
                   ),
                   const SizedBox(height: 8),
                   Text(
-                    'Your new password must be different from\npreviously used passwords.',
+                    "Create a strong password to keep your\naccount safe and secure.",
                     textAlign: TextAlign.center,
                     style: TextStyle(
                       fontSize: 14,
-                      color: Colors.grey[600],
+                      color: Colors.grey[500],
                       height: 1.5,
                     ),
                   ),
                   const SizedBox(height: 32),
 
-                  // 4. Fields
-                  PasswordField(
+                  // Fields
+                  _buildFieldSection(
                     controller: _oldController,
-                    label: 'Current Password',
-                    obscureText: _obscureOld,
+                    label: "Current Password",
+                    obscure: _obscureOld,
                     onToggle: () => setState(() => _obscureOld = !_obscureOld),
                   ),
                   const SizedBox(height: 16),
-
-                  PasswordField(
+                  _buildFieldSection(
                     controller: _newController,
-                    label: 'New Password',
-                    obscureText: _obscureNew,
+                    label: "New Password",
+                    obscure: _obscureNew,
                     onToggle: () => setState(() => _obscureNew = !_obscureNew),
                     validator: (val) {
-                      if (val == null || val.length < 6) {
-                        return 'Min 6 characters';
-                      }
-                      if (val == _oldController.text) {
-                        return 'Must be different from old';
-                      }
+                      if (val == null || val.length < 6) return 'Min 6 characters';
+                      if (val == _oldController.text) return 'Cannot match old';
                       return null;
                     },
                   ),
                   const SizedBox(height: 16),
-
-                  PasswordField(
+                  _buildFieldSection(
                     controller: _confirmController,
-                    label: 'Confirm New Password',
-                    obscureText: _obscureConfirm,
+                    label: "Confirm Password",
+                    obscure: _obscureConfirm,
                     onToggle: () =>
                         setState(() => _obscureConfirm = !_obscureConfirm),
-                    onSubmitted: (_) => _submit(context),
                     validator: (val) => val != _newController.text
                         ? 'Passwords do not match'
                         : null,
+                    isLast: true,
+                    onSubmitted: (_) => _submit(),
                   ),
+
                   const SizedBox(height: 32),
 
-                  // 5. Button
-                  LoginButton(
-                    text: 'Update Password',
-                    isLoading: state is AuthLoading,
-                    onPressed: () => _submit(context),
+                  // Button
+                  BlocBuilder<AuthBloc, AuthState>(
+                    builder: (context, state) {
+                      return LoginButton(
+                        text: "Update Password",
+                        isLoading: state is AuthLoading,
+                        onPressed: _submit,
+                      );
+                    },
                   ),
-                  const SizedBox(height: 16),
                 ],
               ),
             ),
           ),
-        );
-      },
+        ),
+      ),
+    );
+  }
+
+  Widget _buildFieldSection({
+    required TextEditingController controller,
+    required String label,
+    required bool obscure,
+    required VoidCallback onToggle,
+    String? Function(String?)? validator,
+    bool isLast = false,
+    Function(String)? onSubmitted,
+  }) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Padding(
+          padding: const EdgeInsets.only(left: 4, bottom: 6),
+          child: Text(
+            label,
+            style: const TextStyle(
+              fontSize: 13,
+              fontWeight: FontWeight.w600,
+              color: Colors.black54,
+            ),
+          ),
+        ),
+        PasswordField(
+          controller: controller,
+          label: "Enter $label",
+          obscureText: obscure,
+          onToggle: onToggle,
+          validator: validator,
+          onSubmitted: onSubmitted,
+        ),
+      ],
     );
   }
 }

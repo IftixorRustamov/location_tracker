@@ -1,9 +1,12 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:location/location.dart';
+import 'package:location_tracker/core/di/injection_container.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 
 mixin TrackingManager<T extends StatefulWidget> on State<T> {
+  final Location _locationManager = Location();
+
   StreamSubscription<LocationData>? gpsSubscription;
   Timer? sessionTimer;
   Timer? syncTimer;
@@ -16,41 +19,19 @@ mixin TrackingManager<T extends StatefulWidget> on State<T> {
 
   Future<void> toggleBackgroundMode(bool enable) async {
     try {
-      final Location location = Location();
-
-      bool bgEnabled = await location.isBackgroundModeEnabled();
+      bool bgEnabled = await _locationManager.isBackgroundModeEnabled();
 
       if (enable && !bgEnabled) {
-        await location.enableBackgroundMode(enable: true);
-
-        // Android specific config (requires distinct notification setup in native if customization needed)
+        await _locationManager.enableBackgroundMode(enable: true);
         debugPrint("🔋 Background Mode: ENABLED");
-      }
-      else if (!enable && bgEnabled) {
-        await location.enableBackgroundMode(enable: false);
+      } else if (!enable && bgEnabled) {
+        await _locationManager.enableBackgroundMode(enable: false);
         debugPrint("🪫 Background Mode: DISABLED");
       }
     } catch (e) {
-      debugPrint("Background Mode Error: $e");
+      debugPrint("⚠️ Background Mode Error: $e");
     }
   }
-
-  void stopAllStreams() {
-    gpsSubscription?.cancel();
-    sessionTimer?.cancel();
-    syncTimer?.cancel();
-    snapTimer?.cancel();
-    WakelockPlus.disable();
-    toggleBackgroundMode(false);
-  }
-
-  String formatDuration(Duration d) {
-    String twoDigits(int n) => n.toString().padLeft(2, '0');
-    final hours = d.inHours > 0 ? "${twoDigits(d.inHours)}:" : "";
-    return "$hours${twoDigits(d.inMinutes.remainder(60))}:${twoDigits(d.inSeconds.remainder(60))}";
-  }
-
-
 
   Future<void> toggleScreenAwake(bool enable) async {
     try {
@@ -59,25 +40,67 @@ mixin TrackingManager<T extends StatefulWidget> on State<T> {
         debugPrint("📱 Screen Wakelock: ENABLED");
       } else {
         await WakelockPlus.disable();
-        debugPrint("sz Screen Wakelock: DISABLED");
+        debugPrint("💤 Screen Wakelock: DISABLED");
       }
     } catch (e) {
-      debugPrint("Wakelock error: $e");
+      debugPrint("⚠️ Wakelock error: $e");
     }
   }
 
-  // DRY: Reusable permission check
-  Future<bool> checkLocationPermissions(Location location) async {
-    bool enabled = await location.serviceEnabled();
-    if (!enabled) {
-      enabled = await location.requestService();
-      if (!enabled) return false;
+  void stopAllStreams() {
+    log.d("🛑 Stopping all tracking streams...");
+
+    gpsSubscription?.cancel();
+    gpsSubscription = null;
+
+    sessionTimer?.cancel();
+    sessionTimer = null;
+
+    syncTimer?.cancel();
+    syncTimer = null;
+
+    snapTimer?.cancel();
+    snapTimer = null;
+
+    WakelockPlus.disable();
+  }
+
+  Future<bool> checkLocationPermissions() async {
+    bool serviceEnabled = await _locationManager.serviceEnabled();
+    if (!serviceEnabled) {
+      serviceEnabled = await _locationManager.requestService();
+      if (!serviceEnabled) {
+        debugPrint("🚫 Location Services (GPS) disabled.");
+        return false;
+      }
     }
-    PermissionStatus status = await location.hasPermission();
-    if (status == PermissionStatus.denied) {
-      status = await location.requestPermission();
-      if (status != PermissionStatus.granted) return false;
+
+    PermissionStatus permissionGranted = await _locationManager.hasPermission();
+    if (permissionGranted == PermissionStatus.denied) {
+      permissionGranted = await _locationManager.requestPermission();
+      if (permissionGranted != PermissionStatus.granted) {
+        debugPrint("🚫 Location Permission denied.");
+        return false;
+      }
     }
+
+    if (permissionGranted == PermissionStatus.deniedForever) {
+      debugPrint("🚫 Location denied forever. User must open settings.");
+      return false;
+    }
+
     return true;
+  }
+
+  String formatDuration(Duration d) {
+    String twoDigits(int n) => n.toString().padLeft(2, '0');
+    final String minutes = twoDigits(d.inMinutes.remainder(60));
+    final String seconds = twoDigits(d.inSeconds.remainder(60));
+
+    if (d.inHours > 0) {
+      return "${twoDigits(d.inHours)}:$minutes:$seconds";
+    } else {
+      return "$minutes:$seconds";
+    }
   }
 }

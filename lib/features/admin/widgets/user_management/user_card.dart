@@ -7,12 +7,14 @@ class UserCard extends StatelessWidget {
   final AdminUser user;
   final VoidCallback onEdit;
   final VoidCallback onAssignRole;
+  final VoidCallback onDelete;
 
   const UserCard({
     super.key,
     required this.user,
     required this.onEdit,
     required this.onAssignRole,
+    required this.onDelete,
   });
 
   @override
@@ -100,10 +102,22 @@ class UserCard extends StatelessWidget {
                   onSelected: (value) {
                     if (value == 'edit') onEdit();
                     if (value == 'role') onAssignRole();
+                    if (value == 'delete') onDelete();
                   },
                   itemBuilder: (context) => [
                     _buildPopupItem('edit', Icons.edit, "Edit Details"),
                     _buildPopupItem('role', Icons.security, "Manage Roles"),
+                    const PopupMenuDivider(),
+                    PopupMenuItem(
+                      value: 'delete',
+                      child: Row(
+                        children: [
+                          Icon(Icons.delete_outline, size: 20, color: Colors.redAccent),
+                          const SizedBox(width: 12),
+                          const Text("Delete User", style: TextStyle(color: Colors.redAccent)),
+                        ],
+                      ),
+                    ),
                   ],
                 ),
               ],
