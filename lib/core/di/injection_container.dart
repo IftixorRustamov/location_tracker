@@ -21,7 +21,7 @@ Future<void> init() async {
     () => ApiService(sl<Dio>(), sl<SharedPreferences>()),
   );
   sl.registerLazySingleton<AdminApiService>(
-    () => AdminApiService(sl<Dio>(), sl<SharedPreferences>()),
+    () => AdminApiService(sl<Dio>()),
   );
 
   sl.registerLazySingleton<MapMatchingService>(

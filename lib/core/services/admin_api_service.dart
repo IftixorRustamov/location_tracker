@@ -6,7 +6,6 @@ import 'package:flutter/foundation.dart';
 import 'package:intl/intl.dart';
 import 'package:location_tracker/core/constants/api_constants.dart';
 import 'package:logger/logger.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 
 /// PERFORMANCE OPTIMIZATIONS:
 /// 1. ✅ Better SSE stream error handling
@@ -16,9 +15,8 @@ import 'package:shared_preferences/shared_preferences.dart';
 class AdminApiService {
   static final _log = Logger();
   final Dio _dio;
-  final SharedPreferences _prefs;
 
-  AdminApiService(this._dio, this._prefs);
+  AdminApiService(this._dio);
 
   Future<dynamic> _handleRequest(Future<Response> request) async {
     try {
