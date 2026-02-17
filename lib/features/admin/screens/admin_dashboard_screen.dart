@@ -31,13 +31,23 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
 
   Future<void> _fetchSessions() async {
     setState(() => _isLoading = true);
-    await Future.delayed(const Duration(milliseconds: 300)); // Animation delay
+    await Future.delayed(const Duration(milliseconds: 300));
 
     final result = await _api.getSessions(date: _selectedDate);
 
     if (mounted) {
       setState(() {
-        _sessions = result?.content ?? [];
+        final allSessions = result?.content ?? [];
+
+        // FIX: Filter out duplicates (if the same user has 2 active sessions)
+        // This solves "showing 2 active users... both of them me"
+        final uniqueNames = <String>{};
+        _sessions = allSessions.where((session) {
+          if (uniqueNames.contains(session.name)) return false;
+          uniqueNames.add(session.name);
+          return true;
+        }).toList();
+
         _isLoading = false;
       });
     }
@@ -69,9 +79,17 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
   }
 
   void _navigateToLiveMap(AdminSession session) {
+    // FIX: Pass the specific session to the map screen
+    // You will need to update AdminLiveMapScreen to accept 'targetSession' or 'initialSessionId'
     Navigator.push(
       context,
-      MaterialPageRoute(builder: (_) => AdminLiveMapScreen(apiService: _api)),
+      MaterialPageRoute(
+        builder: (_) => AdminLiveMapScreenDirect(
+          apiService: _api,
+          // Pass the specific user/session to track
+          targetSession: session,
+        ),
+      ),
     );
   }
 
@@ -174,42 +192,42 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
           ],
           body: _isLoading
               ? const Center(
-                  child: CircularProgressIndicator(
-                    color: SecondaryConstants.kPrimaryGreen,
-                  ),
-                )
+            child: CircularProgressIndicator(
+              color: SecondaryConstants.kPrimaryGreen,
+            ),
+          )
               : RefreshIndicator(
-                  color: SecondaryConstants.kPrimaryGreen,
-                  onRefresh: _fetchSessions,
-                  child: _sessions.isEmpty
-                      ? DashboardEmptyState(onRefresh: _fetchSessions)
-                      : ListView.separated(
-                          padding: const EdgeInsets.fromLTRB(16, 20, 16, 80),
-                          itemCount: _sessions.length,
-                          separatorBuilder: (c, i) =>
-                              const SizedBox(height: 12),
-                          itemBuilder: (context, index) {
-                            return TweenAnimationBuilder<double>(
-                              tween: Tween(begin: 0, end: 1),
-                              duration: Duration(
-                                milliseconds: 300 + (index * 50),
-                              ),
-                              curve: Curves.easeOut,
-                              builder: (context, value, child) {
-                                return Transform.translate(
-                                  offset: Offset(0, 20 * (1 - value)),
-                                  child: Opacity(opacity: value, child: child),
-                                );
-                              },
-                              child: SessionCard(
-                                session: _sessions[index],
-                                onTap: () =>
-                                    _navigateToLiveMap(_sessions[index]),
-                              ),
-                            );
-                          },
-                        ),
-                ),
+            color: SecondaryConstants.kPrimaryGreen,
+            onRefresh: _fetchSessions,
+            child: _sessions.isEmpty
+                ? DashboardEmptyState(onRefresh: _fetchSessions)
+                : ListView.separated(
+              padding: const EdgeInsets.fromLTRB(16, 20, 16, 80),
+              itemCount: _sessions.length,
+              separatorBuilder: (c, i) =>
+              const SizedBox(height: 12),
+              itemBuilder: (context, index) {
+                return TweenAnimationBuilder<double>(
+                  tween: Tween(begin: 0, end: 1),
+                  duration: Duration(
+                    milliseconds: 300 + (index * 50),
+                  ),
+                  curve: Curves.easeOut,
+                  builder: (context, value, child) {
+                    return Transform.translate(
+                      offset: Offset(0, 20 * (1 - value)),
+                      child: Opacity(opacity: value, child: child),
+                    );
+                  },
+                  child: SessionCard(
+                    session: _sessions[index],
+                    onTap: () =>
+                        _navigateToLiveMap(_sessions[index]),
+                  ),
+                );
+              },
+            ),
+          ),
         ),
       ),
     );

@@ -4,12 +4,6 @@ import 'package:yandex_mapkit/yandex_mapkit.dart';
 import 'package:latlong2/latlong.dart' as latlong;
 import 'package:location_tracker/core/constants/secondary.dart';
 
-/// PERFORMANCE OPTIMIZATIONS:
-/// 1. ✅ Efficient polyline caching with incremental updates
-/// 2. ✅ Debounced camera movements
-/// 3. ✅ Optimized map object rebuilding
-/// 4. ✅ Reduced setState calls
-/// 5. ✅ Better memory management
 class YandexMapBackground extends StatefulWidget {
   final List<latlong.LatLng> polylineCoordinates;
   final latlong.LatLng? currentPosition;
@@ -30,33 +24,29 @@ class YandexMapBackground extends StatefulWidget {
 
 class _YandexMapBackgroundState extends State<YandexMapBackground> {
   final Completer<YandexMapController> _controllerCompleter = Completer();
+
+  // 1. Cached Icon to prevent memory jitter
   late final PlacemarkIcon _userPlacemarkIcon;
 
-  // OPTIMIZATION: Cached Yandex points to avoid conversion on every build
+  // Optimizations
   List<Point> _cachedYandexPoints = [];
   int _lastPolylineLength = 0;
-
-  // Camera control optimization
   bool _isAutoFollowing = true;
-  Timer? _cameraMoveDebouncer;
   bool _isCameraMoving = false;
-
-  // OPTIMIZATION: Track last heading to avoid unnecessary updates
-  double _lastHeading = 0.0;
+  Timer? _cameraMoveDebouncer;
 
   @override
   void initState() {
     super.initState();
     _isAutoFollowing = widget.shouldFollowUser;
-    _lastHeading = widget.currentHeading;
 
-    // Pre-load placemark icon
+    // 2. Initialize the icon ONCE here
     _userPlacemarkIcon = PlacemarkIcon.single(
       PlacemarkIconStyle(
         image: BitmapDescriptor.fromAssetImage(SecondaryConstants.userArrow),
-        rotationType: RotationType.rotate,
+        rotationType: RotationType.rotate, // ✅ CRITICAL: Allows arrow to turn
         scale: 0.12,
-        anchor: const Offset(0.5, 0.5),
+        anchor: const Offset(0.5, 0.5), // Center of the image
       ),
     );
 
@@ -67,26 +57,17 @@ class _YandexMapBackgroundState extends State<YandexMapBackground> {
   void didUpdateWidget(covariant YandexMapBackground oldWidget) {
     super.didUpdateWidget(oldWidget);
 
-    // Update polyline cache if needed
     _updatePolylineCache();
 
-    // Handle position changes with debouncing
-    final posChanged = oldWidget.currentPosition != widget.currentPosition;
-    if (posChanged && _isAutoFollowing && !_isCameraMoving) {
+    // Debounce camera moves to prevent stuttering
+    if (widget.currentPosition != oldWidget.currentPosition && _isAutoFollowing) {
       _debouncedMoveCamera();
     }
 
-    // Update auto-follow state
-    if (oldWidget.shouldFollowUser != widget.shouldFollowUser) {
+    // Toggle follow mode
+    if (widget.shouldFollowUser != oldWidget.shouldFollowUser) {
       setState(() => _isAutoFollowing = widget.shouldFollowUser);
-      if (widget.shouldFollowUser) {
-        _moveCamera();
-      }
-    }
-
-    // Update heading if changed significantly
-    if ((oldWidget.currentHeading - widget.currentHeading).abs() > 5) {
-      _lastHeading = widget.currentHeading;
+      if (_isAutoFollowing) _moveCamera();
     }
   }
 
@@ -97,15 +78,13 @@ class _YandexMapBackgroundState extends State<YandexMapBackground> {
   }
 
   // ==========================================
-  // POLYLINE CACHE OPTIMIZATION
+  // OPTIMIZED POLYLINE CACHE
   // ==========================================
-
-  /// OPTIMIZATION: Incremental polyline updates instead of full conversion
   void _updatePolylineCache() {
-    final currentLength = widget.polylineCoordinates.length;
+    final int currentLength = widget.polylineCoordinates.length;
 
     if (currentLength > _lastPolylineLength) {
-      // Add only new points (incremental)
+      // Incremental: Only convert new points
       final newPoints = widget.polylineCoordinates
           .skip(_lastPolylineLength)
           .map((e) => Point(latitude: e.latitude, longitude: e.longitude));
@@ -113,24 +92,21 @@ class _YandexMapBackgroundState extends State<YandexMapBackground> {
       _cachedYandexPoints.addAll(newPoints);
       _lastPolylineLength = currentLength;
     } else if (currentLength < _lastPolylineLength) {
-      // Full rebuild if list shrunk (e.g., new session)
+      // Reset: Full rebuild if list shrunk
       _cachedYandexPoints = widget.polylineCoordinates
           .map((e) => Point(latitude: e.latitude, longitude: e.longitude))
           .toList();
       _lastPolylineLength = currentLength;
     }
-    // If length is same, no update needed
   }
 
   // ==========================================
-  // MAP OBJECTS (OPTIMIZED)
+  // MAP OBJECTS
   // ==========================================
-
-  /// Build map objects efficiently
   List<MapObject> _buildMapObjects() {
     final List<MapObject> objects = [];
 
-    // 1. Route polyline (using cached points)
+    // 1. Route Polyline
     if (_cachedYandexPoints.isNotEmpty) {
       objects.add(
         PolylineMapObject(
@@ -140,19 +116,18 @@ class _YandexMapBackgroundState extends State<YandexMapBackground> {
           strokeWidth: 4.5,
           outlineColor: Colors.white,
           outlineWidth: 1.5,
-
         ),
       );
     }
 
-    // 2. Live tracking mode (user arrow + halo)
+    // 2. Live Tracking Markers
     if (widget.currentPosition != null) {
       final userPoint = Point(
         latitude: widget.currentPosition!.latitude,
         longitude: widget.currentPosition!.longitude,
       );
 
-      // Accuracy halo
+      // Accuracy Halo (Transparent Green Circle)
       objects.add(
         CircleMapObject(
           mapId: const MapObjectId('accuracy_halo'),
@@ -163,18 +138,18 @@ class _YandexMapBackgroundState extends State<YandexMapBackground> {
         ),
       );
 
-      // User arrow marker (using pre-loaded icon)
+      // User Arrow - ✅ Uses the Cached Icon!
       objects.add(
         PlacemarkMapObject(
           mapId: const MapObjectId('user_location'),
           point: userPoint,
-          direction: _lastHeading, // Use cached heading
-          icon: _userPlacemarkIcon,
+          direction: (widget.currentHeading + 180) % 360,
           opacity: 1.0,
+          icon: _userPlacemarkIcon, // Use the variable, don't recreate it
         ),
       );
     }
-    // 3. History mode (start/end markers)
+    // 3. Static Markers (History Mode)
     else if (_cachedYandexPoints.length >= 2) {
       final start = _cachedYandexPoints.first;
       final end = _cachedYandexPoints.last;
@@ -197,29 +172,24 @@ class _YandexMapBackgroundState extends State<YandexMapBackground> {
   }
 
   // ==========================================
-  // CAMERA CONTROL (OPTIMIZED)
+  // CAMERA CONTROL
   // ==========================================
-
-  /// Debounced camera movement to avoid excessive updates
   void _debouncedMoveCamera() {
-    _cameraMoveDebouncer?.cancel();
-    _cameraMoveDebouncer = Timer(const Duration(milliseconds: 300), () {
+    if (_cameraMoveDebouncer?.isActive ?? false) return;
+
+    _cameraMoveDebouncer = Timer(const Duration(milliseconds: 100), () {
       if (mounted && !_isCameraMoving) {
         _moveCamera();
       }
     });
   }
 
-  /// Move camera to current position
   Future<void> _moveCamera() async {
-    if (!_controllerCompleter.isCompleted || widget.currentPosition == null) {
-      return;
-    }
+    if (!_controllerCompleter.isCompleted || widget.currentPosition == null) return;
 
+    _isCameraMoving = true;
     try {
-      _isCameraMoving = true;
       final controller = await _controllerCompleter.future;
-
       await controller.moveCamera(
         CameraUpdate.newCameraPosition(
           CameraPosition(
@@ -227,63 +197,42 @@ class _YandexMapBackgroundState extends State<YandexMapBackground> {
               latitude: widget.currentPosition!.latitude,
               longitude: widget.currentPosition!.longitude,
             ),
-            zoom: 16.5,
-            tilt: 30,
-            azimuth: _lastHeading,
+            zoom: 17.5, // Good zoom level for driving
+            tilt: 40,   // Tilted view for 3D effect
+            azimuth: widget.currentHeading, // Rotates camera with car
           ),
         ),
-        animation: const MapAnimation(
-          type: MapAnimationType.smooth,
-          duration: 0.5,
-        ),
+        animation: const MapAnimation(type: MapAnimationType.linear, duration: 0.2),
       );
     } catch (e) {
-      debugPrint('⚠️ Camera move error: $e');
+      debugPrint("Camera move error: $e");
     } finally {
       _isCameraMoving = false;
     }
   }
 
-  /// Handle camera position changes
-  void _handleCameraChange(
-      CameraPosition pos,
-      CameraUpdateReason reason,
-      bool finished,
-      ) {
-    // Disable auto-follow when user manually moves map
+  void _handleCameraChange(CameraPosition pos, CameraUpdateReason reason, bool finished) {
+    // If user manually drags map, stop auto-following
     if (reason == CameraUpdateReason.gestures && _isAutoFollowing) {
       setState(() => _isAutoFollowing = false);
     }
   }
 
-  /// Recenter map on user position
   void recenter() {
-    if (!mounted) return;
-
     setState(() => _isAutoFollowing = true);
     _moveCamera();
   }
 
-  // ==========================================
-  // BUILD
-  // ==========================================
-
   @override
   Widget build(BuildContext context) {
-    final isNight = Theme.of(context).brightness == Brightness.dark;
+    final bool isNight = Theme.of(context).brightness == Brightness.dark;
 
     return Stack(
       children: [
         YandexMap(
           onMapCreated: (controller) {
-            if (!_controllerCompleter.isCompleted) {
-              _controllerCompleter.complete(controller);
-
-              // Initial camera position
-              if (widget.currentPosition != null) {
-                _moveCamera();
-              }
-            }
+            _controllerCompleter.complete(controller);
+            if (widget.currentPosition != null) _moveCamera();
           },
           mapObjects: _buildMapObjects(),
           onCameraPositionChanged: _handleCameraChange,
@@ -292,27 +241,18 @@ class _YandexMapBackgroundState extends State<YandexMapBackground> {
             horizontal: HorizontalAlignment.left,
             vertical: VerticalAlignment.bottom,
           ),
-          // OPTIMIZATION: Disable unnecessary features
-          rotateGesturesEnabled: true,
-          scrollGesturesEnabled: true,
-          tiltGesturesEnabled: true,
-          zoomGesturesEnabled: true,
-          mapType: MapType.vector,
         ),
 
-        // Recenter button (only show when not following)
+        // Recenter Button
         if (!_isAutoFollowing && widget.currentPosition != null)
           Positioned(
             bottom: 120,
             right: 16,
             child: FloatingActionButton.small(
-              heroTag: 'recenter_map',
+              heroTag: 'recenter_fab',
               backgroundColor: isNight ? Colors.grey[900] : Colors.white,
               onPressed: recenter,
-              child: const Icon(
-                Icons.my_location,
-                color: Color(0xFF4CAF50),
-              ),
+              child: const Icon(Icons.my_location, color: Color(0xFF4CAF50)),
             ),
           ),
       ],

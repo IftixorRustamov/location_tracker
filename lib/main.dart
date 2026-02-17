@@ -8,14 +8,16 @@ import 'package:location_tracker/my_app.dart';
 import 'core/di/injection_container.dart';
 
 void main() async {
-  WidgetsFlutterBinding.ensureInitialized();
-
-  runZonedGuarded(() async {
-    await init();
-    runApp(
-      BlocProvider(create: (context) => sl<AuthBloc>(), child: const MyApp()),
-    );
-  }, (error, stack) {
-    log.e('Uncaught error', error: error, stackTrace: stack);
-  });
+  runZonedGuarded(
+    () async {
+      WidgetsFlutterBinding.ensureInitialized();
+      await init();
+      runApp(
+        BlocProvider(create: (context) => sl<AuthBloc>(), child: const MyApp()),
+      );
+    },
+    (error, stack) {
+      log.e('Uncaught error', error: error, stackTrace: stack);
+    },
+  );
 }

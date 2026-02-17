@@ -1,17 +1,10 @@
 import 'dart:async';
-import 'dart:convert';
-
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 import 'package:intl/intl.dart';
 import 'package:location_tracker/core/constants/api_constants.dart';
 import 'package:logger/logger.dart';
 
-/// PERFORMANCE OPTIMIZATIONS:
-/// 1. ✅ Better SSE stream error handling
-/// 2. ✅ Automatic reconnection logic
-/// 3. ✅ Memory leak prevention
-/// 4. ✅ Proper stream disposal
 class AdminApiService {
   static final _log = Logger();
   final Dio _dio;
@@ -22,15 +15,12 @@ class AdminApiService {
     try {
       final response = await request;
       final data = response.data;
-
       if (data is Map<String, dynamic> && data.containsKey('data')) {
         return data['data'];
       }
       return data;
     } on DioException catch (e) {
-      _log.w(
-        "ADMIN API ERROR: ${e.response?.statusCode} - ${e.message}",
-      );
+      _log.w("ADMIN API ERROR: ${e.response?.statusCode} - ${e.message}");
       return null;
     } catch (e) {
       _log.w("UNKNOWN ERROR: $e");
@@ -39,95 +29,43 @@ class AdminApiService {
   }
 
   // ==========================================
-  // REAL-TIME LIVE MAP (SSE) - OPTIMIZED
+  // REAL-TIME LIVE MAP (POLLING)
   // ==========================================
 
-  /// Stream live location updates with automatic reconnection
-  Stream<LiveLocationUpdate> streamAllLiveLocations() {
-    return _createSseStream();
-  }
-
-  /// OPTIMIZATION: Separate stream creation for better error handling
-  Stream<LiveLocationUpdate> _createSseStream() async* {
-    int reconnectAttempts = 0;
-    const maxReconnectAttempts = 5;
-    const reconnectDelay = Duration(seconds: 3);
-
-    while (reconnectAttempts < maxReconnectAttempts) {
+  /// Polls the server for live location updates every [interval]
+  Stream<LiveLocationUpdate> streamAllLiveLocations({
+    Duration interval = const Duration(seconds: 3),
+  }) async* {
+    while (true) {
       try {
-        _log.i("Connecting to SSE Stream (attempt ${reconnectAttempts + 1})...");
+        final response = await _dio.get('/api/v1/sessions/admin/live/users');
 
-        final response = await _dio.get(
-          '/api/v1/sessions/admin/live/all',
-          options: Options(
-            responseType: ResponseType.stream,
-            headers: {
-              'Accept': 'text/event-stream',
-              'Cache-Control': 'no-cache',
-              'Connection': 'keep-alive',
-            },
-            // OPTIMIZATION: Add timeout to prevent hanging
-            receiveTimeout: const Duration(seconds: 30),
-          ),
-        );
+        if (response.statusCode == 200) {
+          // FIX: Handle the wrapper object {"success": true, "data": [...]}
+          final responseData = response.data;
+          List<dynamic> rawList = [];
 
-        _log.i("SSE Stream connected");
-        reconnectAttempts = 0; // Reset on successful connection
+          if (responseData is Map<String, dynamic> && responseData.containsKey('data')) {
+            rawList = responseData['data'] ?? [];
+          } else if (responseData is List) {
+            rawList = responseData;
+          }
 
-        // OPTIMIZATION: Better stream handling with proper error recovery
-        final stream = (response.data.stream as Stream<List<int>>)
-            .transform(utf8.decoder)
-            .transform(const LineSplitter())
-            .handleError((error) {
-          _log.w("Stream error: $error");
-        });
+          _log.i("Active Users Found: ${rawList.length}"); // Debug log
 
-        await for (final line in stream) {
-          if (line.startsWith('data:')) {
+          for (var item in rawList) {
             try {
-              final jsonStr = line.substring(5).trim();
-              if (jsonStr.isNotEmpty && jsonStr != 'ping') {
-                final json = jsonDecode(jsonStr);
-                yield LiveLocationUpdate.fromJson(json);
-              }
+              yield LiveLocationUpdate.fromJson(item);
             } catch (e) {
-              _log.w("Parse Error: $e");
-              // Continue processing other events
+              _log.w("Error parsing live user: $e");
             }
-          } else if (line.startsWith(':')) {
-            // Ignore SSE comments (heartbeat)
-            continue;
           }
         }
-
-        // Stream ended normally, break the loop
-        _log.i("SSE Stream ended normally");
-        break;
-
-      } on DioException catch (e) {
-        reconnectAttempts++;
-        _log.w(
-          "SSE Connection failed (attempt $reconnectAttempts): ${e.message}",
-        );
-
-        if (reconnectAttempts >= maxReconnectAttempts) {
-          _log.w("Max reconnection attempts reached");
-          throw Exception("SSE connection failed after $maxReconnectAttempts attempts");
-        }
-
-        // Wait before reconnecting
-        await Future.delayed(reconnectDelay * reconnectAttempts);
-
       } catch (e) {
-        reconnectAttempts++;
-        _log.w("SSE Stream Error: $e");
-
-        if (reconnectAttempts >= maxReconnectAttempts) {
-          throw Exception("SSE connection failed: $e");
-        }
-
-        await Future.delayed(reconnectDelay);
+        _log.w("Polling error: $e");
       }
+
+      await Future.delayed(interval);
     }
   }
 
@@ -142,14 +80,12 @@ class AdminApiService {
   }) async {
     try {
       final String dateStr = DateFormat('yyyy-MM-dd').format(date);
-
       final result = await _handleRequest(
         _dio.get(
           ApiConstants.getSessions,
           queryParameters: {'date': dateStr, 'page': page, 'size': size},
         ),
       );
-
       return result != null ? AdminSessionResponse.fromJson(result) : null;
     } catch (e) {
       _log.w("Failed to get sessions: $e");
@@ -165,8 +101,7 @@ class AdminApiService {
           queryParameters: {'sessionId': sessionId},
         ),
       );
-      if (result is Map<String, dynamic>) return result;
-      return null;
+      return result is Map<String, dynamic> ? result : null;
     } catch (e) {
       _log.w("Failed to get live session data: $e");
       return null;
@@ -185,7 +120,6 @@ class AdminApiService {
           queryParameters: {'page': page, 'size': size},
         ),
       );
-
       return result != null ? AdminUserResponse.fromJson(result) : null;
     } catch (e) {
       _log.w("Failed to get users: $e");
@@ -199,7 +133,6 @@ class AdminApiService {
         '/api/users/$userId/update',
         data: {"name": name, "username": username},
       );
-      _log.i("User $userId updated successfully");
       return true;
     } catch (e) {
       _log.w("Update User Failed: $e");
@@ -210,12 +143,9 @@ class AdminApiService {
   Future<List<AdminRole>> getRoles() async {
     try {
       final result = await _handleRequest(_dio.get('/api/roles/all'));
-
       if (result != null) {
         if (result is Map && result.containsKey('content')) {
-          return (result['content'] as List)
-              .map((e) => AdminRole.fromJson(e))
-              .toList();
+          return (result['content'] as List).map((e) => AdminRole.fromJson(e)).toList();
         } else if (result is List) {
           return result.map((e) => AdminRole.fromJson(e)).toList();
         }
@@ -230,7 +160,6 @@ class AdminApiService {
   Future<bool> deleteUser(int userId) async {
     try {
       await _dio.delete('/api/users/$userId/delete');
-      _log.i("User $userId deleted successfully");
       return true;
     } catch (e) {
       _log.w("Delete User Failed: $e");
@@ -242,64 +171,57 @@ class AdminApiService {
     try {
       await _dio.post(
         ApiConstants.assignRoleToUser,
-        data: {
-          "userId": userId,
-          "roleIds": [roleId],
-        },
+        data: {"userId": userId, "roleIds": [roleId]},
       );
-      _log.i("Role $roleId assigned to user $userId");
-      return null; // Success
+      return null;
     } on DioException catch (e) {
-      final errorMsg = e.response?.data['message'] ??
-          "Server Error: ${e.response?.statusCode}";
-      _log.w("Assign role failed: $errorMsg");
-      return errorMsg;
+      return e.response?.data['message'] ?? "Server Error: ${e.response?.statusCode}";
     } catch (e) {
-      _log.w("Assign role failed: $e");
       return "Connection failed";
     }
   }
 }
 
 // ==========================================
-// MODELS
+// MODELS (Updated to match Screenshot)
 // ==========================================
 
 class LiveLocationUpdate {
   final String sessionId;
+  final int userId;      // Added
+  final String username; // Added
   final double lat;
   final double lon;
+  final String timestamp;
+
+  // Optional fields (defaults used if API doesn't send them)
   final double speed;
   final double accuracy;
-  final String timestamp;
 
   LiveLocationUpdate({
     required this.sessionId,
+    required this.userId,
+    required this.username,
     required this.lat,
     required this.lon,
+    required this.timestamp,
     this.speed = 0.0,
     this.accuracy = 0.0,
-    required this.timestamp,
   });
 
   factory LiveLocationUpdate.fromJson(Map<String, dynamic> json) {
-    try {
-      return LiveLocationUpdate(
-        sessionId: json['sessionId']?.toString() ?? '',
-        lat: (json['lat'] as num).toDouble(),
-        lon: (json['lon'] as num).toDouble(),
-        speed: (json['speed'] as num?)?.toDouble() ?? 0.0,
-        accuracy: (json['accuracy'] as num?)?.toDouble() ?? 0.0,
-        timestamp: json['timestamp']?.toString() ?? DateTime.now().toIso8601String(),
-      );
-    } catch (e) {
-      debugPrint('❌ Failed to parse LiveLocationUpdate: $e');
-      rethrow;
-    }
+    return LiveLocationUpdate(
+      sessionId: json['sessionId']?.toString() ?? '',
+      userId: json['userId'] as int? ?? 0,
+      username: json['username']?.toString() ?? 'Unknown',
+      lat: (json['lat'] as num?)?.toDouble() ?? 0.0,
+      lon: (json['lon'] as num?)?.toDouble() ?? 0.0,
+      timestamp: json['timestamp']?.toString() ?? DateTime.now().toIso8601String(),
+      // Handle potential missing fields gracefully
+      speed: (json['speed'] as num?)?.toDouble() ?? 0.0,
+      accuracy: (json['accuracy'] as num?)?.toDouble() ?? 0.0,
+    );
   }
-
-  @override
-  String toString() => 'LiveLocationUpdate(session: $sessionId, lat: $lat, lon: $lon)';
 }
 
 class AdminSessionResponse {
@@ -309,18 +231,12 @@ class AdminSessionResponse {
   AdminSessionResponse({required this.content, required this.totalPages});
 
   factory AdminSessionResponse.fromJson(Map<String, dynamic> json) {
-    try {
-      return AdminSessionResponse(
-        content: (json['content'] as List?)
-            ?.map((e) => AdminSession.fromJson(e))
-            .toList() ??
-            [],
-        totalPages: json['totalPages'] as int? ?? 0,
-      );
-    } catch (e) {
-      debugPrint('❌ Failed to parse AdminSessionResponse: $e');
-      rethrow;
-    }
+    return AdminSessionResponse(
+      content: (json['content'] as List?)
+          ?.map((e) => AdminSession.fromJson(e))
+          .toList() ?? [],
+      totalPages: json['totalPages'] as int? ?? 0,
+    );
   }
 }
 
@@ -345,18 +261,12 @@ class AdminUserResponse {
   AdminUserResponse({required this.content, required this.totalPages});
 
   factory AdminUserResponse.fromJson(Map<String, dynamic> json) {
-    try {
-      return AdminUserResponse(
-        content: (json['content'] as List?)
-            ?.map((e) => AdminUser.fromJson(e))
-            .toList() ??
-            [],
-        totalPages: json['totalPages'] as int? ?? 0,
-      );
-    } catch (e) {
-      debugPrint('❌ Failed to parse AdminUserResponse: $e');
-      rethrow;
-    }
+    return AdminUserResponse(
+      content: (json['content'] as List?)
+          ?.map((e) => AdminUser.fromJson(e))
+          .toList() ?? [],
+      totalPages: json['totalPages'] as int? ?? 0,
+    );
   }
 }
 
@@ -375,18 +285,12 @@ class AdminUser {
 
   factory AdminUser.fromJson(Map<String, dynamic> json) {
     List<String> roles = [];
-
-    try {
-      if (json['roles'] != null && json['roles'] is List) {
-        roles = (json['roles'] as List).map((r) {
-          if (r is Map) return r['name'].toString();
-          return r.toString();
-        }).toList();
-      }
-    } catch (e) {
-      debugPrint('⚠️ Failed to parse user roles: $e');
+    if (json['roles'] != null && json['roles'] is List) {
+      roles = (json['roles'] as List).map((r) {
+        if (r is Map) return r['name'].toString();
+        return r.toString();
+      }).toList();
     }
-
     return AdminUser(
       id: json['id'] as int? ?? 0,
       name: json['name']?.toString() ?? 'No Name',

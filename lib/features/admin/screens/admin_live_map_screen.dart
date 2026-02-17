@@ -1,54 +1,49 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
+import 'package:yandex_mapkit/yandex_mapkit.dart';
 import 'package:location_tracker/core/constants/secondary.dart';
 import 'package:location_tracker/core/services/admin_api_service.dart';
 import 'package:location_tracker/features/admin/widgets/live_map/driver_info_card.dart';
 import 'package:location_tracker/features/admin/widgets/live_map/map_header.dart';
 import 'package:location_tracker/features/admin/widgets/live_map/recenter_button.dart';
-import 'package:yandex_mapkit/yandex_mapkit.dart';
 
-class AdminLiveMapScreen extends StatefulWidget {
-  // Make these optional. If provided, we "lock" onto this driver initially.
-  final String? initialSessionId;
-  final String? initialDriverName;
+/// Original implementation with initial zoom fix
+class AdminLiveMapScreenDirect extends StatefulWidget {
+  final AdminSession? targetSession;
   final AdminApiService apiService;
 
-  const AdminLiveMapScreen({
+  const AdminLiveMapScreenDirect({
     super.key,
-    this.initialSessionId,
-    this.initialDriverName,
+    this.targetSession,
     required this.apiService,
   });
 
   @override
-  State<AdminLiveMapScreen> createState() => _AdminLiveMapScreenState();
+  State<AdminLiveMapScreenDirect> createState() => _AdminLiveMapScreenDirectState();
 }
 
-class _AdminLiveMapScreenState extends State<AdminLiveMapScreen> {
+class _AdminLiveMapScreenDirectState extends State<AdminLiveMapScreenDirect> {
   final Completer<YandexMapController> _controllerCompleter = Completer();
 
-  // Stream & Data
+  // State
   StreamSubscription<LiveLocationUpdate>? _streamSubscription;
   final Map<String, LiveLocationUpdate> _activeSessions = {};
 
-  // Selection State
   String? _selectedSessionId;
-  String? _selectedDriverName; // Store name if available
+  String? _selectedDriverName;
   bool _isFollowing = true;
   bool _isConnected = false;
+  bool _hasPerformedInitialZoom = false; // NEW: Track if initial zoom is done
 
   @override
   void initState() {
     super.initState();
-
-    // If opened for a specific user, select them immediately
-    if (widget.initialSessionId != null) {
-      _selectedSessionId = widget.initialSessionId;
-      _selectedDriverName = widget.initialDriverName;
+    if (widget.targetSession != null) {
+      _selectedSessionId = widget.targetSession!.id;
+      _selectedDriverName = widget.targetSession!.name;
     }
-
-    _startLiveStream();
+    _startPolling();
   }
 
   @override
@@ -57,7 +52,7 @@ class _AdminLiveMapScreenState extends State<AdminLiveMapScreen> {
     super.dispose();
   }
 
-  void _startLiveStream() {
+  void _startPolling() {
     setState(() => _isConnected = true);
 
     _streamSubscription = widget.apiService.streamAllLiveLocations().listen(
@@ -65,101 +60,126 @@ class _AdminLiveMapScreenState extends State<AdminLiveMapScreen> {
         if (!mounted) return;
 
         setState(() {
-          // Update the specific session in our map
+          // 🎯 FIX: Check if this is the FIRST TIME seeing the target session
+          final isFirstTimeSeenTarget = widget.targetSession != null &&
+              update.sessionId == widget.targetSession!.id &&
+              !_activeSessions.containsKey(update.sessionId) &&
+              !_hasPerformedInitialZoom;
+
           _activeSessions[update.sessionId] = update;
 
-          // If we are following a specific user, move camera
-          if (_isFollowing && _selectedSessionId == update.sessionId) {
-            _moveCameraToPoint(Point(latitude: update.lat, longitude: update.lon));
+          // 🚀 Initial Zoom: When we first see our target, zoom to them
+          if (isFirstTimeSeenTarget && _isFollowing) {
+            _hasPerformedInitialZoom = true;
+            debugPrint("🎯 Initial zoom to target: ${update.username}");
+            _animateCamera(Point(latitude: update.lat, longitude: update.lon));
+          }
+          // 🔄 Auto-follow: Continue following if enabled
+          else if (_isFollowing && _selectedSessionId == update.sessionId) {
+            _animateCamera(Point(latitude: update.lat, longitude: update.lon));
           }
         });
       },
-      onError: (e) {
-        debugPrint("❌ Stream Error: $e");
-        setState(() => _isConnected = false);
-        // Retry logic could go here
-      },
-      onDone: () {
-        debugPrint("⚠️ Stream Closed");
-        setState(() => _isConnected = false);
-      },
+      onError: (e) => setState(() => _isConnected = false),
     );
   }
 
-  Future<void> _moveCameraToPoint(Point point) async {
-    final controller = await _controllerCompleter.future;
-    controller.moveCamera(
-      CameraUpdate.newCameraPosition(CameraPosition(target: point, zoom: 17)),
-      animation: const MapAnimation(type: MapAnimationType.smooth, duration: 0.8),
-    );
-  }
+  // 🛠️ CAMERA LOGIC
+  Future<void> _animateCamera(Point point) async {
+    try {
+      final controller = await _controllerCompleter.future;
 
-  void _onMarkerTap(LiveLocationUpdate update) {
-    setState(() {
-      _selectedSessionId = update.sessionId;
-      // If the update object had a name field, we would use it here.
-      // For now, if it matches the initial session, use that name, else show ID.
-      if (update.sessionId == widget.initialSessionId) {
-        _selectedDriverName = widget.initialDriverName;
-      } else {
-        final id = update.sessionId;
-        _selectedDriverName = "Session #${id.length >= 4 ? id.substring(0, 4) : id}";
-      }
-      _isFollowing = true;
-    });
-    _moveCameraToPoint(Point(latitude: update.lat, longitude: update.lon));
-  }
-
-  void _recenter() {
-    if (_selectedSessionId != null && _activeSessions.containsKey(_selectedSessionId)) {
-      // 1. Follow Selected Driver
-      setState(() => _isFollowing = true);
-      final user = _activeSessions[_selectedSessionId]!;
-      _moveCameraToPoint(Point(latitude: user.lat, longitude: user.lon));
-    } else {
-      // 2. Or Fit All Drivers (Zoom Out)
-      _fitAllDrivers();
+      await controller.moveCamera(
+        CameraUpdate.newCameraPosition(
+          CameraPosition(
+            target: point,
+            zoom: 17.0, // High zoom to see the street
+            tilt: 0,
+            azimuth: 0,
+          ),
+        ),
+        animation: const MapAnimation(
+          type: MapAnimationType.smooth,
+          duration: 0.5,
+        ),
+      );
+    } catch (e) {
+      debugPrint("Camera Error: $e");
     }
   }
 
-  Future<void> _fitAllDrivers() async {
-    if (_activeSessions.isEmpty) return;
-
-    // Simple logic: just zoom out to a city level or calculate bounds if needed
-    // For simplicity, let's just zoom out to default city view
+  // 🛠️ RECENTER BUTTON ACTION
+  void _onRecenterPressed() async {
     final controller = await _controllerCompleter.future;
-    // You can implement calculateBounds logic here if you have latlong2 package
-    // For now, let's just reset zoom.
-    controller.moveCamera(
-      CameraUpdate.zoomTo(12),
-      animation: const MapAnimation(type: MapAnimationType.smooth, duration: 1.0),
-    );
+
+    if (_selectedSessionId != null && _activeSessions.containsKey(_selectedSessionId)) {
+      // CASE 1: Lock onto selected driver
+      setState(() => _isFollowing = true);
+      final user = _activeSessions[_selectedSessionId]!;
+
+      // 🚀 ACTION: Move Immediately!
+      _animateCamera(Point(latitude: user.lat, longitude: user.lon));
+
+    } else if (_activeSessions.isNotEmpty) {
+      // CASE 2: Fit all drivers
+      double minLat = 90, maxLat = -90, minLon = 180, maxLon = -180;
+
+      for (var s in _activeSessions.values) {
+        if (s.lat < minLat) minLat = s.lat;
+        if (s.lat > maxLat) maxLat = s.lat;
+        if (s.lon < minLon) minLon = s.lon;
+        if (s.lon > maxLon) maxLon = s.lon;
+      }
+
+      await controller.moveCamera(
+        CameraUpdate.newBounds(
+          BoundingBox(
+            northEast: Point(latitude: maxLat, longitude: maxLon),
+            southWest: Point(latitude: minLat, longitude: minLon),
+          ),
+          focusRect: const ScreenRect(
+            topLeft: ScreenPoint(x: 50, y: 50),
+            bottomRight: ScreenPoint(x: 50, y: 50),
+          ),
+        ),
+        animation: const MapAnimation(
+          type: MapAnimationType.smooth,
+          duration: 0.8,
+        ),
+      );
+    }
   }
 
   @override
   Widget build(BuildContext context) {
-    // Prepare Markers
     final mapObjects = _activeSessions.values.map((session) {
       final isSelected = session.sessionId == _selectedSessionId;
 
       return PlacemarkMapObject(
-        mapId: MapObjectId('session_${session.sessionId}'),
+        mapId: MapObjectId('user_${session.sessionId}'),
         point: Point(latitude: session.lat, longitude: session.lon),
+        zIndex: isSelected ? 10 : 1,
         opacity: 1.0,
-        zIndex: isSelected ? 10 : 1, // Selected sits on top
-        // Scale up if selected
         icon: PlacemarkIcon.single(
           PlacemarkIconStyle(
             image: BitmapDescriptor.fromAssetImage(SecondaryConstants.carIcon),
-            scale: isSelected ? 1.0 : 0.7,
+            scale: isSelected ? 1.2 : 0.8,
             rotationType: RotationType.rotate,
           ),
         ),
-        onTap: (obj, point) => _onMarkerTap(session),
+        // 🛠️ MARKER TAP ACTION
+        onTap: (obj, point) {
+          setState(() {
+            _selectedSessionId = session.sessionId;
+            _selectedDriverName = session.username;
+            _isFollowing = true;
+          });
+          // 🚀 ACTION: Move Immediately on Tap!
+          _animateCamera(Point(latitude: session.lat, longitude: session.lon));
+        },
       );
     }).toList();
 
-    // Data for Bottom Card
     final selectedUpdate = _selectedSessionId != null
         ? _activeSessions[_selectedSessionId]
         : null;
@@ -167,79 +187,109 @@ class _AdminLiveMapScreenState extends State<AdminLiveMapScreen> {
     return Scaffold(
       body: Stack(
         children: [
-          // 1. MAP LAYER
           YandexMap(
-            onMapCreated: (c) => _controllerCompleter.complete(c),
+            onMapCreated: (c) {
+              _controllerCompleter.complete(c);
+
+              // 🎯 FIX: If data already exists when map loads, zoom to it
+              if (widget.targetSession != null && !_hasPerformedInitialZoom) {
+                Future.delayed(const Duration(milliseconds: 800), () {
+                  if (_activeSessions.containsKey(widget.targetSession!.id)) {
+                    final update = _activeSessions[widget.targetSession!.id]!;
+                    _hasPerformedInitialZoom = true;
+                    _animateCamera(Point(
+                      latitude: update.lat,
+                      longitude: update.lon,
+                    ));
+                    debugPrint("🎯 Initial zoom from onMapCreated");
+                  }
+                });
+              }
+            },
             mapObjects: mapObjects,
-            onCameraPositionChanged: (cameraPosition, reason, finished) {
+            onCameraPositionChanged: (pos, reason, finished) {
               if (reason == CameraUpdateReason.gestures) {
-                // Stop following if user drags the map
                 setState(() => _isFollowing = false);
               }
             },
-            // Tap on empty map to deselect
-            onMapTap: (_) {
-              setState(() {
-                _selectedSessionId = null;
-                _isFollowing = false;
-              });
-            },
+            onMapTap: (_) => setState(() => _isFollowing = false),
           ),
 
-          // 2. HEADER
           Align(
             alignment: Alignment.topCenter,
             child: MapHeader(
-              title: _selectedSessionId != null
+              title: _selectedDriverName != null
                   ? "Tracking: $_selectedDriverName"
-                  : "Live Fleet (${_activeSessions.length} Active)",
+                  : "Active Fleet (${_activeSessions.length})",
               onBackPressed: () => Navigator.pop(context),
             ),
           ),
 
-          // 3. CONNECTION STATUS INDICATOR
-          if (!_isConnected)
-            Positioned(
-              top: 100,
-              left: 0, right: 0,
-              child: Center(
-                child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                  decoration: BoxDecoration(
-                    color: Colors.redAccent,
-                    borderRadius: BorderRadius.circular(20),
-                  ),
-                  child: const Text(
-                    "Connecting to Live Stream...",
-                    style: TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.bold),
-                  ),
-                ),
-              ),
-            ),
-
-          // 4. RECENTER BUTTON
           Positioned(
             right: 16,
             bottom: selectedUpdate != null ? 220 : 40,
             child: RecenterButton(
-              onPressed: _recenter,
-              // Change icon based on mode (Follow vs Fit All)
-              // You can pass an icon parameter to RecenterButton if you update it
+              onPressed: _onRecenterPressed,
             ),
           ),
 
-          // 5. BOTTOM INFO CARD
           if (selectedUpdate != null)
             Align(
               alignment: Alignment.bottomCenter,
               child: DriverInfoCard(
-                driverName: _selectedDriverName ?? "Unknown Driver",
-                status: "Speed: ${selectedUpdate.speed.toStringAsFixed(1)} km/h",
-                lastUpdated: DateFormat('hh:mm:ss a').format(DateTime.now()),
+                driverName: _selectedDriverName ?? "Unknown",
+                status: _getTimeAgo(selectedUpdate.timestamp),
+                lastUpdated: DateFormat('HH:mm:ss').format(DateTime.now()),
+              ),
+            ),
+
+          // Connection status indicator
+          if (!_isConnected)
+            Positioned(
+              top: 100,
+              left: 0,
+              right: 0,
+              child: Center(
+                child: Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 16,
+                    vertical: 8,
+                  ),
+                  decoration: BoxDecoration(
+                    color: Colors.red,
+                    borderRadius: BorderRadius.circular(20),
+                  ),
+                  child: const Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(Icons.signal_wifi_off, color: Colors.white, size: 16),
+                      SizedBox(width: 8),
+                      Text(
+                        'Connection Lost',
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
               ),
             ),
         ],
       ),
     );
+  }
+
+  String _getTimeAgo(String timestamp) {
+    try {
+      final date = DateTime.parse(timestamp);
+      final diff = DateTime.now().toUtc().difference(date);
+      if (diff.inSeconds < 60) return "Updated ${diff.inSeconds}s ago";
+      if (diff.inMinutes < 60) return "Updated ${diff.inMinutes}m ago";
+      return "Updated ${diff.inHours}h ago (STALE)";
+    } catch (e) {
+      return "Live";
+    }
   }
 }

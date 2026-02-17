@@ -8,6 +8,12 @@ class SessionCard extends StatelessWidget {
 
   const SessionCard({super.key, required this.session, required this.onTap});
 
+  String _getSafeId(String? id) {
+    if (id == null || id.isEmpty) return "N/A";
+    if (id.length < 8) return id.toUpperCase();
+    return id.substring(0, 8).toUpperCase();
+  }
+
   @override
   Widget build(BuildContext context) {
     return Container(
@@ -31,6 +37,7 @@ class SessionCard extends StatelessWidget {
             padding: const EdgeInsets.all(16.0),
             child: Row(
               children: [
+                // Icon Box
                 Container(
                   width: 50,
                   height: 50,
@@ -41,27 +48,40 @@ class SessionCard extends StatelessWidget {
                   child: const Icon(Icons.drive_eta, color: Colors.blue, size: 24),
                 ),
                 const SizedBox(width: 16),
+
+                // Text Column
                 Expanded(
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Text(
-                        session.name,
-                        style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: SecondaryConstants.kBlackText),
+                        session.name.isNotEmpty ? session.name : "Unknown Driver",
+                        style: const TextStyle(
+                            fontSize: 16,
+                            fontWeight: FontWeight.bold,
+                            color: SecondaryConstants.kBlackText
+                        ),
                       ),
                       const SizedBox(height: 4),
                       Row(
                         children: [
                           Icon(Icons.tag, size: 14, color: Colors.grey[400]),
+                          const SizedBox(width: 4),
                           Text(
-                            "ID: ${session.id.substring(0, 8).toUpperCase()}",
-                            style: TextStyle(fontSize: 12, color: Colors.grey[500], fontFamily: 'monospace'),
+                            "ID: ${_getSafeId(session.id)}",
+                            style: TextStyle(
+                                fontSize: 12,
+                                color: Colors.grey[500],
+                                fontFamily: 'monospace'
+                            ),
                           ),
                         ],
                       ),
                     ],
                   ),
                 ),
+
+                // Arrow Icon
                 Container(
                   padding: const EdgeInsets.all(8),
                   decoration: BoxDecoration(

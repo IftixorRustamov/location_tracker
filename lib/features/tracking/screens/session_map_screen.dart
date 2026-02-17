@@ -1,11 +1,13 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
-import 'package:latlong2/latlong.dart';
-import 'package:location_tracker/features/tracking/widgets/yandex_map_background.dart';
+import 'package:yandex_mapkit/yandex_mapkit.dart';
+import 'package:latlong2/latlong.dart' as latlong;
+import 'package:location_tracker/core/constants/secondary.dart'; // Ensure you have your constants
 
-class SessionMapScreen extends StatelessWidget {
+class SessionMapScreen extends StatefulWidget {
   final int sessionId;
   final DateTime date;
-  final List<LatLng> routePoints;
+  final List<latlong.LatLng> routePoints;
   final double totalDistanceKm;
 
   const SessionMapScreen({
@@ -13,103 +15,62 @@ class SessionMapScreen extends StatelessWidget {
     required this.sessionId,
     required this.date,
     required this.routePoints,
-    this.totalDistanceKm = 0.0,
+    required this.totalDistanceKm,
   });
 
   @override
+  State<SessionMapScreen> createState() => _SessionMapScreenState();
+}
+
+class _SessionMapScreenState extends State<SessionMapScreen> {
+  final Completer<YandexMapController> _controllerCompleter = Completer();
+
+  @override
   Widget build(BuildContext context) {
-    // 1. Smart Distance Fallback:
-    // If 0.0 was passed, calculate it manually from the points.
-    final double displayDistance = (totalDistanceKm > 0)
-        ? totalDistanceKm
-        : _calculateDistance(routePoints);
+    // Determine map style based on system theme
+    final bool isNight = Theme.of(context).brightness == Brightness.dark;
 
     return Scaffold(
-      extendBodyBehindAppBar: true,
       appBar: AppBar(
-        backgroundColor: Colors.transparent,
-        elevation: 0,
-        leading: Container(
-          margin: const EdgeInsets.all(8),
-          decoration: const BoxDecoration(
-              color: Colors.white,
-              shape: BoxShape.circle,
-              boxShadow: [BoxShadow(blurRadius: 5, color: Colors.black26)]
-          ),
-          child: IconButton(
-            icon: const Icon(Icons.arrow_back, color: Colors.black),
-            onPressed: () => Navigator.pop(context),
-            tooltip: 'Back',
-          ),
+        title: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text("Trip Details", style: TextStyle(fontSize: 16)),
+            Text(
+              "${widget.totalDistanceKm.toStringAsFixed(2)} km • ${widget.date.toString().split(' ')[0]}",
+              style: const TextStyle(fontSize: 12, color: Colors.grey),
+            ),
+          ],
         ),
       ),
       body: Stack(
         children: [
-          // 2. The Map (History Mode)
-          // passing null for currentPosition triggers "History Mode" (Fit Route)
-          YandexMapBackground(
-            polylineCoordinates: routePoints,
-            currentPosition: null,
-            currentHeading: 0.0,
+          YandexMap(
+            onMapCreated: (controller) {
+              _controllerCompleter.complete(controller);
+              // 🚀 AUTO-ZOOM: Trigger zoom when map is ready
+              _zoomToRoute(controller);
+            },
+            mapObjects: _buildMapObjects(),
+            nightModeEnabled: isNight,
+            logoAlignment: const MapAlignment(
+              horizontal: HorizontalAlignment.left,
+              vertical: VerticalAlignment.bottom,
+            ),
           ),
 
-          // 3. Bottom Summary Card
+          // Optional: Floating Button to re-center if user pans away
           Positioned(
             bottom: 30,
-            left: 20,
-            right: 20,
-            child: Container(
-              padding: const EdgeInsets.all(20),
-              decoration: BoxDecoration(
-                color: Colors.white,
-                borderRadius: BorderRadius.circular(20),
-                boxShadow: const [
-                  BoxShadow(color: Colors.black26, blurRadius: 10, offset: Offset(0, 5))
-                ],
-              ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      Text(
-                        "Session #$sessionId",
-                        style: const TextStyle(
-                            fontSize: 18,
-                            fontWeight: FontWeight.bold,
-                            color: Colors.black87
-                        ),
-                      ),
-                      Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                        decoration: BoxDecoration(
-                            color: Colors.green.withOpacity(0.1),
-                            borderRadius: BorderRadius.circular(8)
-                        ),
-                        child: const Text(
-                          "COMPLETED",
-                          style: TextStyle(fontSize: 10, color: Colors.green, fontWeight: FontWeight.bold),
-                        ),
-                      )
-                    ],
-                  ),
-                  const SizedBox(height: 5),
-                  Text(
-                    _formatDate(date),
-                    style: const TextStyle(fontSize: 14, color: Colors.grey),
-                  ),
-                  const Divider(height: 20),
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      _buildStat("DISTANCE", "${displayDistance.toStringAsFixed(2)} km"),
-                      _buildStat("POINTS", "${routePoints.length}"),
-                    ],
-                  )
-                ],
-              ),
+            right: 16,
+            child: FloatingActionButton(
+              mini: true,
+              backgroundColor: Colors.white,
+              child: const Icon(Icons.center_focus_strong, color: Colors.black87),
+              onPressed: () async {
+                final controller = await _controllerCompleter.future;
+                _zoomToRoute(controller);
+              },
             ),
           ),
         ],
@@ -117,35 +78,98 @@ class SessionMapScreen extends StatelessWidget {
     );
   }
 
-  Widget _buildStat(String label, String value) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text(
-            label,
-            style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Colors.grey)
+  // ==========================================
+  // 🗺️ MAP OBJECTS (Polyline + Markers)
+  // ==========================================
+  List<MapObject> _buildMapObjects() {
+    if (widget.routePoints.isEmpty) return [];
+
+    final objects = <MapObject>[];
+
+    // 1. The Route Line
+    objects.add(
+      PolylineMapObject(
+        mapId: const MapObjectId('session_polyline'),
+        polyline: Polyline(
+          points: widget.routePoints
+              .map((p) => Point(latitude: p.latitude, longitude: p.longitude))
+              .toList(),
         ),
-        const SizedBox(height: 2),
-        Text(
-            value,
-            style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w800, color: Colors.blue)
-        ),
-      ],
+        strokeColor: Colors.blueAccent, // Or your brand color
+        strokeWidth: 4.0,
+        outlineColor: Colors.white,
+        outlineWidth: 1.0,
+      ),
     );
+
+    // 2. Start Marker (Green Dot)
+    objects.add(
+      CircleMapObject(
+        mapId: const MapObjectId('start_point'),
+        circle: Circle(
+          center: Point(
+            latitude: widget.routePoints.first.latitude,
+            longitude: widget.routePoints.first.longitude,
+          ),
+          radius: 8,
+        ),
+        strokeColor: Colors.white,
+        strokeWidth: 2,
+        fillColor: Colors.green,
+      ),
+    );
+
+    // 3. End Marker (Red Dot)
+    objects.add(
+      CircleMapObject(
+        mapId: const MapObjectId('end_point'),
+        circle: Circle(
+          center: Point(
+            latitude: widget.routePoints.last.latitude,
+            longitude: widget.routePoints.last.longitude,
+          ),
+          radius: 8,
+        ),
+        strokeColor: Colors.white,
+        strokeWidth: 2,
+        fillColor: Colors.red,
+      ),
+    );
+
+    return objects;
   }
 
-  String _formatDate(DateTime dt) {
-    return "${dt.day}/${dt.month}/${dt.year} • ${dt.hour}:${dt.minute.toString().padLeft(2, '0')}";
-  }
+  // ==========================================
+  // 🔍 AUTO-ZOOM LOGIC
+  // ==========================================
+  Future<void> _zoomToRoute(YandexMapController controller) async {
+    if (widget.routePoints.isEmpty) return;
 
-  // Helper: Calculate total distance if DB didn't save it
-  double _calculateDistance(List<LatLng> points) {
-    if (points.length < 2) return 0.0;
-    double total = 0.0;
-    const distance = Distance();
-    for (int i = 0; i < points.length - 1; i++) {
-      total += distance.as(LengthUnit.Kilometer, points[i], points[i + 1]);
+    // 1. Calculate Bounds
+    double minLat = widget.routePoints.first.latitude;
+    double maxLat = widget.routePoints.first.latitude;
+    double minLon = widget.routePoints.first.longitude;
+    double maxLon = widget.routePoints.first.longitude;
+
+    for (var point in widget.routePoints) {
+      if (point.latitude < minLat) minLat = point.latitude;
+      if (point.latitude > maxLat) maxLat = point.latitude;
+      if (point.longitude < minLon) minLon = point.longitude;
+      if (point.longitude > maxLon) maxLon = point.longitude;
     }
-    return total;
+
+    // 2. Create Bounding Box
+    final boundingBox = BoundingBox(
+      northEast: Point(latitude: maxLat, longitude: maxLon),
+      southWest: Point(latitude: minLat, longitude: minLon),
+    );
+
+    // 3. Move Camera
+    await controller.moveCamera(
+      CameraUpdate.newBounds(
+        boundingBox,
+      ),
+      animation: const MapAnimation(type: MapAnimationType.smooth, duration: 1.0),
+    );
   }
 }

@@ -1,7 +1,7 @@
 abstract class ApiConstants {
-  static const String baseUrl = 'http://192.168.20.152:8080';
-  // static const String baseUrl =
-  //     'https://untensing-hendrix-unsentenced.ngrok-free.dev';
+  // static const String baseUrl = 'http://192.168.20.152:8080';
+  static const String baseUrl =
+      'https://untensing-hendrix-unsentenced.ngrok-free.dev';
 
   static const String api = '/api';
   static const String authPath = '/auth';

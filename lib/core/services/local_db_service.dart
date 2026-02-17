@@ -27,6 +27,26 @@ class LocalDatabase {
     );
   }
 
+  Future<void> deleteSession(int sessionId) async {
+    try {
+      final db = await database;
+
+      await db.delete(
+        'points',
+        where: 'session_id = ?',
+        whereArgs: [sessionId],
+      );
+
+      // Delete session
+      await db.delete('sessions', where: 'id = ?', whereArgs: [sessionId]);
+
+      debugPrint("✅ Deleted session $sessionId");
+    } catch (e) {
+      debugPrint("❌ Failed to delete session: $e");
+      rethrow;
+    }
+  }
+
   Future<List<Map<String, dynamic>>> getAllSessions() async {
     final db = await database;
     return await db.query('sessions', orderBy: 'id DESC');
@@ -101,21 +121,22 @@ class LocalDatabase {
 
   Future<int?> getActiveSessionId() async {
     final db = await database;
-    final maps = await db.query(
-      'sessions',
-      orderBy: 'id DESC',
-      limit: 1,
-    );
+    final maps = await db.query('sessions', orderBy: 'id DESC', limit: 1);
 
     if (maps.isNotEmpty) {
-      if (maps.first['distance'] == null || (maps.first['distance'] as num) == 0) {
+      if (maps.first['distance'] == null ||
+          (maps.first['distance'] as num) == 0) {
         return maps.first['id'] as int;
       }
     }
     return null;
   }
 
-  Future<void> updateSessionStats(int sessionId, double distance, int duration) async {
+  Future<void> updateSessionStats(
+    int sessionId,
+    double distance,
+    int duration,
+  ) async {
     final db = await database;
     await db.update(
       'sessions',
@@ -130,7 +151,10 @@ class LocalDatabase {
   // ==========================================
 
   /// Insert multiple points in a single transaction
-  Future<void> insertPointsBatch(List<LocationPoint> points, int sessionId) async {
+  Future<void> insertPointsBatch(
+    List<LocationPoint> points,
+    int sessionId,
+  ) async {
     if (points.isEmpty) return;
     final db = await database;
     final batch = db.batch();
@@ -138,7 +162,11 @@ class LocalDatabase {
     for (var point in points) {
       final data = point.toJson();
       data['session_id'] = sessionId;
-      batch.insert('points', data, conflictAlgorithm: ConflictAlgorithm.replace);
+      batch.insert(
+        'points',
+        data,
+        conflictAlgorithm: ConflictAlgorithm.replace,
+      );
     }
 
     await batch.commit(noResult: true);

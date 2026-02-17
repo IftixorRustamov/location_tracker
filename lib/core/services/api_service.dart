@@ -17,9 +17,7 @@ class ApiService {
       final response = await request;
       return {'success': true, 'data': response.data};
     } on DioException catch (e) {
-      _log.w(
-        "API ERROR [${e.response?.statusCode}]: ${e.requestOptions.path}",
-      );
+      _log.w("API ERROR [${e.response?.statusCode}]: ${e.requestOptions.path}");
       return {
         'success': false,
         'message': e.response?.data['message'] ?? 'Xatolik yuz berdi',
@@ -175,25 +173,36 @@ class ApiService {
   Future<Map<String, dynamic>> stopTrackingSession() =>
       _handleRequest(_dio.post(ApiConstants.stopTracking));
 
-  Future<Map<String, dynamic>> sendLocationData(
-    List<LocationPoint> points,
-  ) async {
+  Future<Map<String, dynamic>> sendLocationData(List<LocationPoint> points) async {
     try {
-      return await _handleRequest(
-        _dio.post(
-          ApiConstants.updateLocation,
-          data: {"points": points.map((p) => p.toJson()).toList()},
-        ),
+      // 1. Prepare data EXACTLY as shown in your screenshot
+      final body = {
+        "points": points.map((p) => p.toJson()).toList(),
+      };
+
+      // 2. Send Request
+      final response = await _dio.post(
+        ApiConstants.updateLocation, // '/api/v1/users/tracking/location'
+        data: body,
       );
+
+      return {
+        'success': true,
+        'data': response.data,
+      };
     } on DioException catch (e) {
+      // Handle Session Expired
+      if (e.response?.statusCode == 404) {
+        return {'success': false, 'statusCode': 404, 'message': 'Session expired'};
+      }
+
       return {
         'success': false,
         'statusCode': e.response?.statusCode,
-        'message': e.response?.data['message'] ?? 'Failed to sync',
+        'message': e.message,
       };
     }
   }
-
   bool isLoggedIn() {
     final token = _prefs.getString(SecondaryConstants.accessToken);
     return token != null && token.isNotEmpty;
