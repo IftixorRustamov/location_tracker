@@ -1,13 +1,15 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
-import 'package:location_tracker/core/utils/app_logger.dart';
 import 'package:yandex_mapkit/yandex_mapkit.dart';
 
 import '../../../core/config/tracking_config.dart';
 import '../../../core/services/admin_api_service.dart';
+import 'package:logger/logger.dart';
 
-/// Simplified controller for admin live map
+/// Improved admin live map controller with better debugging
 class AdminLiveMapController extends ChangeNotifier {
+  static final _log = Logger();
+
   final AdminApiService _apiService;
   final AdminSession? _targetSession;
 
@@ -22,6 +24,11 @@ class AdminLiveMapController extends ChangeNotifier {
   String? _selectedDriverName;
   bool _isFollowing = true;
   bool _isConnected = false;
+  bool _hasPerformedInitialZoom = false;
+
+  // Stats for debugging
+  int _updateCount = 0;
+  DateTime? _lastUpdateTime;
 
   AdminLiveMapController({
     required AdminApiService apiService,
@@ -31,6 +38,7 @@ class AdminLiveMapController extends ChangeNotifier {
     if (_targetSession != null) {
       _selectedSessionId = _targetSession.id;
       _selectedDriverName = _targetSession.name;
+      _log.i('🎯 Target session set: ${_targetSession.name} (${_targetSession.id})');
     }
   }
 
@@ -44,6 +52,8 @@ class AdminLiveMapController extends ChangeNotifier {
   bool get isFollowing => _isFollowing;
   bool get isConnected => _isConnected;
   int get activeDriverCount => _activeSessions.length;
+  int get updateCount => _updateCount;
+  DateTime? get lastUpdateTime => _lastUpdateTime;
 
   LiveLocationUpdate? get selectedUpdate =>
       _selectedSessionId != null ? _activeSessions[_selectedSessionId] : null;
@@ -55,58 +65,72 @@ class AdminLiveMapController extends ChangeNotifier {
   /// Start streaming live locations
   void startStreaming() {
     if (_streamSubscription != null) {
-      AppLogger.warning('Already streaming');
+      _log.w('⚠️ Already streaming');
       return;
     }
 
+    _log.i('🚀 Starting live location stream...');
     _isConnected = true;
+    _updateCount = 0;
     notifyListeners();
 
     _streamSubscription = _apiService.streamAllLiveLocations().listen(
       _handleLocationUpdate,
       onError: _handleStreamError,
       onDone: _handleStreamDone,
+      cancelOnError: false, // Keep streaming even on errors
     );
 
-    AppLogger.info('Live location streaming started');
+    _log.i('✅ Live location stream started');
   }
 
   /// Stop streaming
   void stopStreaming() {
+    _log.i('🛑 Stopping live location stream...');
+
     _streamSubscription?.cancel();
     _streamSubscription = null;
     _isConnected = false;
+
     notifyListeners();
 
-    AppLogger.info('Live location streaming stopped');
+    _log.i('✅ Live location stream stopped');
   }
 
   /// Select a driver to track
   void selectDriver(String sessionId, String driverName) {
+    _log.d('👤 Selected driver: $driverName ($sessionId)');
+
     _selectedSessionId = sessionId;
     _selectedDriverName = driverName;
     _isFollowing = true;
-    notifyListeners();
 
-    AppLogger.debug('Selected driver: $driverName');
+    notifyListeners();
   }
 
   /// Deselect current driver
   void deselectDriver() {
+    _log.d('❌ Deselected driver');
+
     _selectedSessionId = null;
     _selectedDriverName = null;
     _isFollowing = false;
+
     notifyListeners();
   }
 
   /// Toggle auto-follow mode
   void toggleFollow(bool enabled) {
+    _log.d('🔄 Auto-follow: ${enabled ? "ON" : "OFF"}');
+
     _isFollowing = enabled;
     notifyListeners();
   }
 
   /// Recenter map on selected driver or all drivers
   Future<void> recenterMap() async {
+    _log.d('🎯 Recenter requested');
+
     final controller = await mapControllerCompleter.future;
 
     if (_selectedSessionId != null &&
@@ -114,13 +138,19 @@ class AdminLiveMapController extends ChangeNotifier {
       // Center on selected driver
       _isFollowing = true;
       final update = _activeSessions[_selectedSessionId]!;
+
+      _log.i('📍 Centering on ${update.username}');
+
       await _animateToPoint(
         controller,
         Point(latitude: update.lat, longitude: update.lon),
       );
     } else if (_activeSessions.isNotEmpty) {
       // Fit all drivers
+      _log.i('🗺️ Fitting ${_activeSessions.length} drivers');
       await _fitAllDrivers(controller);
+    } else {
+      _log.w('⚠️ No active sessions to center on');
     }
 
     notifyListeners();
@@ -128,6 +158,8 @@ class AdminLiveMapController extends ChangeNotifier {
 
   /// Initialize map (called after map creation)
   Future<void> initializeMap() async {
+    _log.i('🗺️ Initializing map...');
+
     if (_targetSession != null) {
       // Wait for map to initialize
       await Future.delayed(const Duration(milliseconds: 500));
@@ -136,16 +168,22 @@ class AdminLiveMapController extends ChangeNotifier {
       if (_activeSessions.containsKey(_targetSession.id)) {
         final update = _activeSessions[_targetSession.id]!;
         final controller = await mapControllerCompleter.future;
+
+        _log.i('✅ Target data exists, zooming to ${update.username}');
+
         await _animateToPoint(
           controller,
           Point(latitude: update.lat, longitude: update.lon),
         );
-        AppLogger.debug('Zoomed to existing target location');
+
+        _hasPerformedInitialZoom = true;
       } else {
         // Data will arrive soon, zoom will happen in _handleLocationUpdate
-        AppLogger.debug('Waiting for target location data...');
+        _log.d('⏳ Waiting for target location data...');
       }
     }
+
+    _log.i('✅ Map initialization complete');
   }
 
   // ============================================================
@@ -153,20 +191,41 @@ class AdminLiveMapController extends ChangeNotifier {
   // ============================================================
 
   void _handleLocationUpdate(LiveLocationUpdate update) {
+    _updateCount++;
+    _lastUpdateTime = DateTime.now();
+
+    // Validate update
+    if (!update.hasValidCoordinates) {
+      _log.w('⚠️ Invalid coordinates for ${update.username}: (${update.lat}, ${update.lon})');
+      return;
+    }
+
     // Check if this is the first time seeing the target session
     final isFirstTimeSeenTarget = _targetSession != null &&
         update.sessionId == _targetSession.id &&
-        !_activeSessions.containsKey(update.sessionId);
+        !_activeSessions.containsKey(update.sessionId) &&
+        !_hasPerformedInitialZoom;
+
+    // Check if this is a new session
+    final isNewSession = !_activeSessions.containsKey(update.sessionId);
 
     _activeSessions[update.sessionId] = update;
 
+    if (isNewSession) {
+      _log.i('✨ New session: ${update.username} (${update.sessionId})');
+    } else {
+      _log.d('📍 Update #$_updateCount: ${update.username} @ (${update.lat}, ${update.lon})');
+    }
+
     // Initial zoom to target when first seen
     if (isFirstTimeSeenTarget && _isFollowing) {
+      _log.i('🎯 Initial zoom to target: ${update.username}');
+      _hasPerformedInitialZoom = true;
       _followDriver(update);
-      AppLogger.debug('Initial zoom to target: ${update.username}');
     }
     // Auto-follow selected driver
     else if (_isFollowing && _selectedSessionId == update.sessionId) {
+      _log.d('🔄 Following ${update.username}');
       _followDriver(update);
     }
 
@@ -174,13 +233,13 @@ class AdminLiveMapController extends ChangeNotifier {
   }
 
   void _handleStreamError(dynamic error) {
-    AppLogger.error('Live location stream error: $error');
+    _log.e('❌ Live location stream error: $error');
     _isConnected = false;
     notifyListeners();
   }
 
   void _handleStreamDone() {
-    AppLogger.info('Live location stream closed');
+    _log.w('⚠️ Live location stream closed');
     _isConnected = false;
     notifyListeners();
   }
@@ -191,7 +250,8 @@ class AdminLiveMapController extends ChangeNotifier {
       CameraUpdateReason reason,
       bool finished,
       ) {
-    if (reason == CameraUpdateReason.gestures) {
+    if (reason == CameraUpdateReason.gestures && _isFollowing) {
+      _log.d('👆 User gesture detected, disabling auto-follow');
       _isFollowing = false;
       notifyListeners();
     }
@@ -199,13 +259,23 @@ class AdminLiveMapController extends ChangeNotifier {
 
   /// Handle map tap (disables auto-follow)
   void onMapTap(Point point) {
-    _isFollowing = false;
-    notifyListeners();
+    if (_isFollowing) {
+      _log.d('👆 Map tapped, disabling auto-follow');
+      _isFollowing = false;
+      notifyListeners();
+    }
   }
 
   /// Handle marker tap (select driver)
   void onMarkerTap(String sessionId, String username) {
+    _log.d('📌 Marker tapped: $username');
     selectDriver(sessionId, username);
+
+    // Immediately zoom to the tapped marker
+    if (_activeSessions.containsKey(sessionId)) {
+      final update = _activeSessions[sessionId]!;
+      _followDriver(update);
+    }
   }
 
   // ============================================================
@@ -220,7 +290,7 @@ class AdminLiveMapController extends ChangeNotifier {
         Point(latitude: update.lat, longitude: update.lon),
       );
     } catch (e) {
-      AppLogger.error('Camera follow error: $e');
+      _log.e('❌ Camera follow error: $e');
     }
   }
 
@@ -228,51 +298,59 @@ class AdminLiveMapController extends ChangeNotifier {
       YandexMapController controller,
       Point point,
       ) async {
-    await controller.moveCamera(
-      CameraUpdate.newCameraPosition(
-        CameraPosition(
-          target: point,
-          zoom: TrackingConfig.trackingZoomLevel,
-          tilt: 0,
-          azimuth: 0,
+    try {
+      await controller.moveCamera(
+        CameraUpdate.newCameraPosition(
+          CameraPosition(
+            target: point,
+            zoom: TrackingConfig.trackingZoomLevel,
+            tilt: 0,
+            azimuth: 0,
+          ),
         ),
-      ),
-      animation: MapAnimation(
-        type: MapAnimationType.smooth,
-        duration: TrackingConfig.mapAnimationDuration,
-      ),
-    );
+        animation: MapAnimation(
+          type: MapAnimationType.smooth,
+          duration: TrackingConfig.mapAnimationDuration,
+        ),
+      );
+    } catch (e) {
+      _log.e('❌ Camera animation error: $e');
+    }
   }
 
   Future<void> _fitAllDrivers(YandexMapController controller) async {
     if (_activeSessions.isEmpty) return;
 
-    // Calculate bounds
-    double minLat = 90, maxLat = -90, minLon = 180, maxLon = -180;
+    try {
+      // Calculate bounds
+      double minLat = 90, maxLat = -90, minLon = 180, maxLon = -180;
 
-    for (var session in _activeSessions.values) {
-      if (session.lat < minLat) minLat = session.lat;
-      if (session.lat > maxLat) maxLat = session.lat;
-      if (session.lon < minLon) minLon = session.lon;
-      if (session.lon > maxLon) maxLon = session.lon;
+      for (var session in _activeSessions.values) {
+        if (session.lat < minLat) minLat = session.lat;
+        if (session.lat > maxLat) maxLat = session.lat;
+        if (session.lon < minLon) minLon = session.lon;
+        if (session.lon > maxLon) maxLon = session.lon;
+      }
+
+      await controller.moveCamera(
+        CameraUpdate.newBounds(
+          BoundingBox(
+            northEast: Point(latitude: maxLat, longitude: maxLon),
+            southWest: Point(latitude: minLat, longitude: minLon),
+          ),
+          focusRect: const ScreenRect(
+            topLeft: ScreenPoint(x: 50, y: 50),
+            bottomRight: ScreenPoint(x: 50, y: 50),
+          ),
+        ),
+        animation: const MapAnimation(
+          type: MapAnimationType.smooth,
+          duration: 1.0,
+        ),
+      );
+    } catch (e) {
+      _log.e('❌ Fit bounds error: $e');
     }
-
-    await controller.moveCamera(
-      CameraUpdate.newBounds(
-        BoundingBox(
-          northEast: Point(latitude: maxLat, longitude: maxLon),
-          southWest: Point(latitude: minLat, longitude: minLon),
-        ),
-        focusRect: const ScreenRect(
-          topLeft: ScreenPoint(x: 50, y: 50),
-          bottomRight: ScreenPoint(x: 50, y: 50),
-        ),
-      ),
-      animation: const MapAnimation(
-        type: MapAnimationType.smooth,
-        duration: 1.0,
-      ),
-    );
   }
 
   // ============================================================
@@ -310,12 +388,27 @@ class AdminLiveMapController extends ChangeNotifier {
     }
   }
 
+  /// Get debug info for troubleshooting
+  Map<String, dynamic> getDebugInfo() {
+    return {
+      'is_connected': _isConnected,
+      'is_following': _isFollowing,
+      'active_sessions': _activeSessions.length,
+      'selected_session': _selectedSessionId,
+      'target_session': _targetSession?.id,
+      'update_count': _updateCount,
+      'last_update': _lastUpdateTime?.toString(),
+      'has_initial_zoom': _hasPerformedInitialZoom,
+    };
+  }
+
   // ============================================================
   // CLEANUP
   // ============================================================
 
   @override
   void dispose() {
+    _log.i('🧹 Disposing controller...');
     stopStreaming();
     super.dispose();
   }

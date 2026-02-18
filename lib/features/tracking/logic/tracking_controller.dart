@@ -1,6 +1,6 @@
 import 'dart:async';
-import 'dart:isolate';
 import 'package:connectivity_plus/connectivity_plus.dart';
+import 'package:flutter/foundation.dart'; // Required for 'compute'
 import 'package:flutter/material.dart';
 import 'package:flutter_compass/flutter_compass.dart';
 import 'package:latlong2/latlong.dart';
@@ -16,16 +16,22 @@ import 'package:location_tracker/features/tracking/services/database_buffer.dart
 import 'package:location_tracker/features/tracking/services/location_processor.dart';
 import 'package:location_tracker/features/tracking/services/session_manager.dart';
 
-class TrackingController extends ChangeNotifier {
-  // === STATE NOTIFIERS ===
-  final ValueNotifier<List<LatLng>> polylineNotifier = ValueNotifier([]);
-  final ValueNotifier<List<LatLng>> smoothPolylineNotifier = ValueNotifier([]);
-  final ValueNotifier<LatLng?> currentPositionNotifier = ValueNotifier(null);
-  final ValueNotifier<double> speedNotifier = ValueNotifier(0.0);
-  final ValueNotifier<double> accuracyNotifier = ValueNotifier(0.0);
-  final ValueNotifier<double> headingNotifier = ValueNotifier(0.0);
+// -----------------------------------------------------------------------------
+// TOP-LEVEL FUNCTION (Runs in Background Isolation)
+// -----------------------------------------------------------------------------
+// This MUST be outside the class to prevent "Illegal argument in isolate message"
+Map<String, dynamic> _parsePointsInBackground(List<Map<String, dynamic>> rawData) {
+  return {
+    'points': rawData.map((e) => data.LocationPoint.fromJson(e)).toList(),
+    'ids': rawData.map((e) => e['id'] as int).toList(),
+  };
+}
 
-  // === INTERNAL SERVICES ===
+// -----------------------------------------------------------------------------
+// CONTROLLER
+// -----------------------------------------------------------------------------
+class TrackingController extends ChangeNotifier {
+  // === SERVICES ===
   late final DatabaseBuffer _dbBuffer;
   late final SessionManager _sessionManager;
   late final LocationProcessor _locationProcessor;
@@ -36,23 +42,33 @@ class TrackingController extends ChangeNotifier {
   StreamSubscription<CompassEvent>? _compassSubscription;
   StreamSubscription<List<ConnectivityResult>>? _connectivitySubscription;
   Timer? _syncTimer;
-  Timer? _snapTimer;
 
+  // === STATE NOTIFIERS ===
+  final ValueNotifier<List<LatLng>> polylineNotifier = ValueNotifier([]);
+  final ValueNotifier<List<LatLng>> smoothPolylineNotifier = ValueNotifier([]);
+  final ValueNotifier<LatLng?> currentPositionNotifier = ValueNotifier(null);
+  final ValueNotifier<double> speedNotifier = ValueNotifier(0.0);
+  final ValueNotifier<double> accuracyNotifier = ValueNotifier(0.0);
+  final ValueNotifier<double> headingNotifier = ValueNotifier(0.0);
+
+  // === INTERNAL STATE ===
   bool _isConnected = true;
   bool _isBusy = false;
 
-  // 🛠️ Tracks if the hardware compass is actually sending data
   bool _isCompassActive = false;
 
   String? username;
 
+  // === GETTERS ===
   bool get isBusy => _isBusy;
   bool get isTracking => _sessionManager.isTracking;
   bool get isOffline => !_isConnected;
   Duration get sessionDuration => _sessionManager.sessionDuration;
   double get distanceKm => _sessionManager.totalDistanceKm;
 
-  // === INITIALIZATION ===
+  // ============================================================
+  // INITIALIZATION
+  // ============================================================
   Future<void> initialize(Function(String, bool) onMessage) async {
     _dbBuffer = DatabaseBuffer();
     _sessionManager = SessionManager(
@@ -63,8 +79,6 @@ class TrackingController extends ChangeNotifier {
     _locationProcessor = LocationProcessor(
       onValidLocation: _handleValidLocation,
       onPointBuffered: (point) {
-        // DEBUG LOG: Point buffered
-        debugPrint("💾 Buffering point: ${point.lat}, ${point.lon}");
         _dbBuffer.addPoint(point);
         _dbBuffer.flushIfNeeded();
       },
@@ -92,8 +106,9 @@ class TrackingController extends ChangeNotifier {
     _sessionManager.dispose();
   }
 
-  // === USER ACTIONS ===
-
+  // ============================================================
+  // USER ACTIONS
+  // ============================================================
   Future<void> toggleTracking(Function(String, bool) onMessage) async {
     if (isTracking) {
       await stopSession(onMessage);
@@ -103,25 +118,24 @@ class TrackingController extends ChangeNotifier {
   }
 
   Future<void> startSession(Function(String, bool) onMessage) async {
-    debugPrint("🏁 Starting Session Request...");
+    if (_isBusy) return;
     _setBusy(true);
+
     try {
       if (!await _checkPermissions()) {
-        debugPrint("🚫 Permissions denied");
+        onMessage('Location permissions required', true);
         return;
       }
 
       final success = await _sessionManager.startSession();
       if (success) {
-        debugPrint("✅ Session Started Successfully");
         _resumeHardwareServices();
         _resetMapState();
         notifyListeners();
       } else {
-        debugPrint("❌ Session Start Failed in Manager");
+        onMessage('Failed to start tracking', true);
       }
     } catch (e) {
-      debugPrint("❌ Start error: $e");
       onMessage('Failed to start tracking', true);
     } finally {
       _setBusy(false);
@@ -129,38 +143,63 @@ class TrackingController extends ChangeNotifier {
   }
 
   Future<void> stopSession(Function(String, bool) onMessage, {bool isDead = false}) async {
-    _setBusy(true);
+    _setBusy(true); // Start loading
+
     try {
       _cleanupHardwareServices();
-      await _refinePath();
-      if (!isDead) await _performSync(onMessage); // One last sync
 
+      // 2. Try a "Best Effort" Sync (Max 2 seconds)
+      // If internet is slow, don't make the user wait. Data remains in DB.
+      if (!isDead) {
+        try {
+          await _performSync(onMessage).timeout(const Duration(seconds: 2));
+        } catch (_) {}
+      }
+
+      // 3. Stop Session API (Required)
       await _sessionManager.stopSession(isDeadSession: isDead);
+
       notifyListeners();
     } catch (e) {
-      debugPrint("❌ Stop error: $e");
       onMessage('Error saving session', true);
     } finally {
-      _setBusy(false);
+      _setBusy(false); // Stop loading immediately
     }
   }
 
   Future<void> centerOnUser() async {
+    if (!await _checkPermissions()) return;
+
     try {
-      final loc = await _location.getLocation();
+      // 2. Fetch location with a timeout so it doesn't hang
+      final loc = await _location.getLocation().timeout(
+        const Duration(seconds: 2),
+        onTimeout: () {
+          throw TimeoutException("GPS timed out");
+        },
+      );
+
       if (loc.latitude != null && loc.longitude != null) {
-        currentPositionNotifier.value = LatLng(loc.latitude!, loc.longitude!);
+        final newPos = LatLng(loc.latitude!, loc.longitude!);
+
+        // 3. Force update the notifier
+        currentPositionNotifier.value = newPos;
       }
     } catch (e) {
-      debugPrint("Center error: $e");
+      // Fallback: If we already have a position in memory, just trigger the UI
+      if (currentPositionNotifier.value != null) {
+        // Re-assigning triggers the listeners even if value is same
+        // (Use a new object to force equality check failure if needed)
+        final current = currentPositionNotifier.value!;
+        currentPositionNotifier.value = LatLng(current.latitude, current.longitude);
+      }
     }
   }
 
-  // === INTERNAL LOGIC ===
-
+  // ============================================================
+  // LOCATION & HEADING LOGIC
+  // ============================================================
   void _handleValidLocation(LatLng pos, LocationData data) {
-    debugPrint("📍 Valid Location Received: ${pos.latitude}, ${pos.longitude}");
-
     final currentList = polylineNotifier.value;
     polylineNotifier.value = [...currentList, pos];
     currentPositionNotifier.value = pos;
@@ -169,9 +208,9 @@ class TrackingController extends ChangeNotifier {
     speedNotifier.value = speedKmh;
     accuracyNotifier.value = data.accuracy ?? 0;
 
-    // 🛠️ ROTATION LOGIC (Arrow Fix)
-    // If moving fast (> 3km/h), GPS heading is better than compass.
-    // If compass is dead (Emulator), ALWAYS use GPS heading.
+    // If moving > 3km/h, GPS heading is best.
+    // 2. If stopped or emulator (no compass), use GPS heading.
+    // 3. Otherwise, use Compass (handled in _initCompass)
     if (speedKmh > 3.0 && data.heading != null) {
       headingNotifier.value = data.heading!;
     } else if (!_isCompassActive && data.heading != null) {
@@ -185,30 +224,27 @@ class TrackingController extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// 🔍 SYNC LOGIC with DEBUG PRINTS
+  void _initCompass() {
+    _compassSubscription = FlutterCompass.events?.listen((event) {
+      if (event.heading != null) {
+        _isCompassActive = true;
+
+        // Use compass only when stationary or very slow
+        if (speedNotifier.value < 3.0) {
+          headingNotifier.value = event.heading!;
+        }
+      }
+    });
+  }
+
+  // ============================================================
+  // SYNC OPERATIONS
+  // ============================================================
   Future<void> _performSync(Function(String, bool) onMessage) async {
-    if (!_isConnected) {
-      debugPrint("⚠️ Sync Skipped: No Internet");
-      return;
-    }
-    if (!isTracking) return;
+    if (!_isConnected || !isTracking) return;
 
     try {
-      final rawData = await LocalDatabase.instance.getUnsyncedRaw(100);
-      if (rawData.isEmpty) {
-        // Uncomment to debug idle state:
-        // debugPrint("📭 Buffer Empty: No points to send.");
-        return;
-      }
-
-      debugPrint("🚀 Attempting to sync ${rawData.length} points to server...");
-
-      final result = await Isolate.run(() {
-        return {
-          'points': rawData.map((e) => data.LocationPoint.fromJson(e)).toList(),
-          'ids': rawData.map((e) => e['id'] as int).toList(),
-        };
-      });
+      final result = await compute(_parsePointsInBackground, rawData);
 
       final points = result['points'] as List<data.LocationPoint>;
       final ids = result['ids'] as List<int>;
@@ -218,21 +254,51 @@ class TrackingController extends ChangeNotifier {
           .timeout(const Duration(seconds: 10), onTimeout: () => {'success': false, 'message': 'Timeout'});
 
       if (syncResult['success'] == true) {
-        debugPrint("✅ SUCCESS: Sent ${points.length} points!");
         await LocalDatabase.instance.clearPointsByIds(ids);
       } else if (syncResult['statusCode'] == 404) {
-        debugPrint("🛑 Server returned 404: Session Expired");
-        onMessage("Session expired", true);
+        onMessage('Session expired', true);
         await LocalDatabase.instance.clearPointsByIds(ids);
         await stopSession(onMessage, isDead: true);
-      } else {
-        debugPrint("❌ Sync Failed: ${syncResult['statusCode']} - ${syncResult['message']}");
       }
-    } catch (e) {
-      debugPrint("❌ Sync Exception: $e");
-    }
+    } catch (_) {}
   }
 
+  // ============================================================
+  // HARDWARE MANAGEMENT
+  // ============================================================
+  void _resumeHardwareServices() {
+    WakelockPlus.enable();
+    _location.enableBackgroundMode(enable: true);
+
+    _location.changeSettings(
+      accuracy: LocationAccuracy.navigation,
+      interval: 1000,
+      distanceFilter: 0,
+    );
+
+    _gpsSubscription = _location.onLocationChanged.listen(
+          (loc) => _locationProcessor.processLocationData(loc, polylineNotifier.value),
+    );
+
+    _syncTimer = Timer.periodic(const Duration(seconds: 10), (_) => _performSync((_, __) {}));
+  }
+
+  void _cleanupHardwareServices() {
+    _gpsSubscription?.cancel();
+    _compassSubscription?.cancel();
+    _syncTimer?.cancel();
+
+    try {
+      _location.enableBackgroundMode(enable: false);
+      WakelockPlus.disable();
+    } catch (_) {}
+
+    _dbBuffer.flush();
+  }
+
+  // ============================================================
+  // HELPERS
+  // ============================================================
   Future<void> _refinePath() async {
     final polyline = polylineNotifier.value;
     if (polyline.length < 5) return;
@@ -242,12 +308,8 @@ class TrackingController extends ChangeNotifier {
       if (snapped.isNotEmpty) {
         smoothPolylineNotifier.value = snapped;
       }
-    } catch (e) {
-      debugPrint("Map matching error: $e");
-    }
+    } catch (_) {}
   }
-
-  // === HELPERS ===
 
   void _setBusy(bool value) {
     _isBusy = value;
@@ -262,42 +324,6 @@ class TrackingController extends ChangeNotifier {
     headingNotifier.value = 0;
   }
 
-  void _resumeHardwareServices() {
-    WakelockPlus.enable();
-    _location.enableBackgroundMode(enable: true);
-
-    _location.changeSettings(
-      accuracy: LocationAccuracy.navigation,
-      interval: 1000,
-      distanceFilter: 3,
-    );
-
-    debugPrint("📡 GPS Services Resumed");
-
-    _gpsSubscription = _location.onLocationChanged.listen(
-          (loc) => _locationProcessor.processLocationData(loc, polylineNotifier.value),
-    );
-
-    _syncTimer = Timer.periodic(const Duration(seconds: 10), (_) => _performSync((_,__) {}));
-    _snapTimer = Timer.periodic(const Duration(seconds: 15), (_) => _refinePath());
-  }
-
-  void _cleanupHardwareServices() {
-    debugPrint("🛑 Cleaning up hardware services...");
-    _gpsSubscription?.cancel();
-    _compassSubscription?.cancel();
-    _connectivitySubscription?.cancel();
-    _syncTimer?.cancel();
-    _snapTimer?.cancel();
-
-    try {
-      _location.enableBackgroundMode(enable: false);
-      WakelockPlus.disable();
-    } catch (_) {}
-
-    _dbBuffer.flush();
-  }
-
   Future<bool> _checkPermissions() async {
     final status = await _location.hasPermission();
     if (status == PermissionStatus.granted) return true;
@@ -310,19 +336,6 @@ class TrackingController extends ChangeNotifier {
       username = await sl<ApiService>().getUsername();
       notifyListeners();
     } catch (_) {}
-  }
-
-  void _initCompass() {
-    _compassSubscription = FlutterCompass.events?.listen((event) {
-      if (event.heading != null) {
-        _isCompassActive = true;
-
-        // Use compass only at low speeds
-        if (speedNotifier.value < 3.0) {
-          headingNotifier.value = event.heading!;
-        }
-      }
-    });
   }
 
   void _initConnectivity() {

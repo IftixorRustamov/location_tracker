@@ -1,4 +1,3 @@
-import 'package:flutter/foundation.dart';
 import 'package:sqflite/sqflite.dart';
 import 'package:path/path.dart';
 import 'package:location_tracker/data/models/location_point.dart';
@@ -21,67 +20,27 @@ class LocalDatabase {
 
     return await openDatabase(
       path,
-      version: 1,
+      version: 2,
       onCreate: _createDB,
-      onConfigure: _configureDB, // Hook up the configuration
+      onUpgrade: _onUpgrade,
+      onConfigure: _configureDB,
     );
   }
 
-  Future<void> deleteSession(int sessionId) async {
-    try {
-      final db = await database;
-
-      await db.delete(
-        'points',
-        where: 'session_id = ?',
-        whereArgs: [sessionId],
-      );
-
-      // Delete session
-      await db.delete('sessions', where: 'id = ?', whereArgs: [sessionId]);
-
-      debugPrint("✅ Deleted session $sessionId");
-    } catch (e) {
-      debugPrint("❌ Failed to delete session: $e");
-      rethrow;
-    }
-  }
-
-  Future<List<Map<String, dynamic>>> getAllSessions() async {
-    final db = await database;
-    return await db.query('sessions', orderBy: 'id DESC');
-  }
-
-  Future<List<LocationPoint>> getPointsForSession(int sessionId) async {
-    final db = await database;
-    final result = await db.query(
-      'points',
-      where: 'session_id = ?',
-      whereArgs: [sessionId],
-      orderBy: 'timestamp ASC',
-    );
-    return result.map((json) => LocationPoint.fromJson(json)).toList();
-  }
-
-  /// 🛠️ FIXED: Use rawQuery for journal_mode because it returns a result row
   Future<void> _configureDB(Database db) async {
-    // 1. WAL mode returns "wal", so we MUST use rawQuery
     await db.rawQuery('PRAGMA journal_mode = WAL');
-
-    // 2. These commands return nothing, so execute is fine
     await db.execute('PRAGMA synchronous = NORMAL');
     await db.execute('PRAGMA temp_store = MEMORY');
     await db.execute('PRAGMA cache_size = -2000');
-
-    debugPrint("✅ Database configured with optimizations (WAL + Memory)");
   }
 
   Future<void> _createDB(Database db, int version) async {
-    // 1. Table for SESSIONS
+    // 1. Table for SESSIONS with 'end_time'
     await db.execute('''
       CREATE TABLE sessions (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         timestamp TEXT NOT NULL,
+        end_time TEXT, 
         distance REAL DEFAULT 0.0,
         duration INTEGER DEFAULT 0
       )
@@ -106,12 +65,20 @@ class LocalDatabase {
     await db.execute('CREATE INDEX idx_timestamp ON points (timestamp)');
   }
 
+  // Handle migration from V1 to V2
+  Future<void> _onUpgrade(Database db, int oldVersion, int newVersion) async {
+    if (oldVersion < 2) {
+      await db.execute("ALTER TABLE sessions ADD COLUMN end_time TEXT");
+    }
+  }
+
   // ==========================================
   // SESSION MANAGEMENT
   // ==========================================
 
   Future<int> createSession() async {
     final db = await database;
+    // Create new session. 'end_time' is NULL by default (meaning Active)
     return await db.insert('sessions', {
       'timestamp': DateTime.now().toIso8601String(),
       'distance': 0.0,
@@ -121,22 +88,40 @@ class LocalDatabase {
 
   Future<int?> getActiveSessionId() async {
     final db = await database;
-    final maps = await db.query('sessions', orderBy: 'id DESC', limit: 1);
+
+    final maps = await db.query(
+      'sessions',
+      where: 'end_time IS NULL',
+      orderBy: 'id DESC',
+      limit: 1,
+    );
 
     if (maps.isNotEmpty) {
-      if (maps.first['distance'] == null ||
-          (maps.first['distance'] as num) == 0) {
-        return maps.first['id'] as int;
-      }
+      return maps.first['id'] as int;
     }
     return null;
   }
 
+  // 🛠️ NEW: Explicitly close the session
+  Future<void> closeSession(int sessionId, double distance, int duration) async {
+    final db = await database;
+    await db.update(
+      'sessions',
+      {
+        'distance': distance,
+        'duration': duration,
+        'end_time': DateTime.now().toIso8601String(),
+      },
+      where: 'id = ?',
+      whereArgs: [sessionId],
+    );
+  }
+
   Future<void> updateSessionStats(
-    int sessionId,
-    double distance,
-    int duration,
-  ) async {
+      int sessionId,
+      double distance,
+      int duration,
+      ) async {
     final db = await database;
     await db.update(
       'sessions',
@@ -146,22 +131,49 @@ class LocalDatabase {
     );
   }
 
+  Future<void> deleteSession(int sessionId) async {
+    try {
+      final db = await database;
+      await db.delete('points', where: 'session_id = ?', whereArgs: [sessionId]);
+      await db.delete('sessions', where: 'id = ?', whereArgs: [sessionId]);
+    } catch (e) {
+      rethrow;
+    }
+  }
+
+  Future<List<Map<String, dynamic>>> getAllSessions() async {
+    final db = await database;
+    return await db.query('sessions', orderBy: 'id DESC');
+  }
+
+  Future<List<LocationPoint>> getPointsForSession(int sessionId) async {
+    final db = await database;
+    final result = await db.query(
+      'points',
+      where: 'session_id = ?',
+      whereArgs: [sessionId],
+      orderBy: 'timestamp ASC',
+    );
+    return result.map((json) => LocationPoint.fromJson(json)).toList();
+  }
+
   // ==========================================
   // POINTS MANAGEMENT (Optimized)
   // ==========================================
 
-  /// Insert multiple points in a single transaction
   Future<void> insertPointsBatch(
-    List<LocationPoint> points,
-    int sessionId,
-  ) async {
+      List<LocationPoint> points,
+      int sessionId,
+      ) async {
     if (points.isEmpty) return;
     final db = await database;
     final batch = db.batch();
 
     for (var point in points) {
-      final data = point.toJson();
+      // 🛠️ Create a copy of the map to inject session_id safely
+      final Map<String, dynamic> data = Map.from(point.toJson());
       data['session_id'] = sessionId;
+
       batch.insert(
         'points',
         data,
@@ -172,7 +184,6 @@ class LocalDatabase {
     await batch.commit(noResult: true);
   }
 
-  /// Get raw unsynced points for the Isolate
   Future<List<Map<String, dynamic>>> getUnsyncedRaw(int limit) async {
     final db = await database;
     return await db.query(
@@ -183,13 +194,11 @@ class LocalDatabase {
     );
   }
 
-  /// Batch delete points by ID
   Future<void> clearPointsByIds(List<int> ids) async {
     if (ids.isEmpty) return;
     final db = await database;
     final batch = db.batch();
 
-    // Chunking to avoid SQLite variable limits (999)
     const chunkSize = 100;
     for (var i = 0; i < ids.length; i += chunkSize) {
       final end = (i + chunkSize < ids.length) ? i + chunkSize : ids.length;

@@ -1,4 +1,3 @@
-import 'package:flutter/foundation.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:location/location.dart';
 import 'package:location_tracker/data/models/location_point.dart';
@@ -9,10 +8,8 @@ class LocationProcessor {
 
   LocationData? _latestLocationData;
 
-  // 🛠️ RELAXED SETTINGS FOR TESTING
-  static const double _minAccuracy = 200.0; // Increased from 25.0 to allow indoor GPS
-  static const double _minSpeed = 0.0;      // Reduced to capture stationary points
-  static const double _minDistance = 0.0;   // Reduced from 2.0 to capture stationary points
+  static const double _minAccuracy = 200.0;
+  static const double _minDistance = 0.5;
 
   LocationProcessor({
     required this.onValidLocation,
@@ -20,24 +17,16 @@ class LocationProcessor {
   });
 
   void processLocationData(LocationData loc, List<LatLng> currentPolyline) {
-    // 1. Check Quality
-    if (!_isValidLocation(loc)) {
-      // Log failure reason
-      if ((loc.accuracy ?? 999) > _minAccuracy) {
-        debugPrint("⚠️ GPS Skipped: Low Accuracy (${loc.accuracy}m > $_minAccuracy)");
-      }
-      return;
-    }
+    // 1. Check Accuracy (Relaxed for indoors)
+    if (!_isValidLocation(loc)) return;
 
     _latestLocationData = loc;
     final newPos = LatLng(loc.latitude!, loc.longitude!);
 
-    // 2. Check Movement (Always true now for testing)
+    // 2. Check Distance (Sensitivity)
     if (_shouldAddPoint(currentPolyline, newPos)) {
       onValidLocation(newPos, loc);
       _bufferPoint(loc);
-    } else {
-      debugPrint("⚠️ GPS Skipped: Didn't move enough");
     }
   }
 
@@ -61,16 +50,14 @@ class LocationProcessor {
       speed: loc.speed ?? 0,
       timestamp: DateTime.now().toUtc().toIso8601String(),
     );
-    // DEBUG LOG
-    debugPrint("✅ GPS ACCEPTED: ${point.lat}, ${point.lon}");
     onPointBuffered(point);
   }
 
   LocationData? get latestLocationData => _latestLocationData;
 
   double calculateSpeedKmh(LocationData loc) {
-    final speed = loc.speed ?? 0;
-    return speed < _minSpeed ? 0.0 : speed * 3.6;
+    final rawSpeed = loc.speed ?? 0;
+    return rawSpeed * 3.6;
   }
 
   double updateDistance(
@@ -82,8 +69,6 @@ class LocationProcessor {
     if (polyline.isEmpty) return currentDistance;
     final dist = const Distance().as(LengthUnit.Meter, polyline.last, newPos);
 
-    // Only add distance if accuracy is decent, otherwise distance jumps around
-    final errorMargin = (loc.accuracy ?? 5.0).clamp(2.5, 50.0);
-    return dist > errorMargin ? currentDistance + dist : currentDistance;
+    return currentDistance + dist;
   }
 }

@@ -40,9 +40,7 @@ class SessionManager {
         dbBuffer.setSessionId(activeId);
         onShowMessage("Active session recovered", false);
       }
-    } catch (e) {
-      debugPrint("⚠️ Restore session error: $e");
-    }
+    } catch (_) {}
   }
 
   /// Starts a new tracking session
@@ -64,7 +62,6 @@ class SessionManager {
         return false;
       }
     } catch (e) {
-      debugPrint("❌ Start session exception: $e");
       if (e.toString().contains("409")) {
         return await _handle409Conflict();
       }
@@ -77,9 +74,8 @@ class SessionManager {
   Future<void> stopSession({bool isDeadSession = false}) async {
     _stopSessionTimer();
 
-    // Save final stats to DB before clearing ID
     if (_currentSessionId != null) {
-      await LocalDatabase.instance.updateSessionStats(
+      await LocalDatabase.instance.closeSession(
         _currentSessionId!,
         totalDistanceKm,
         _sessionDuration.inSeconds,
@@ -90,9 +86,7 @@ class SessionManager {
     if (!isDeadSession) {
       try {
         await sl<ApiService>().stopTrackingSession();
-      } catch (e) {
-        debugPrint("⚠️ API Stop error: $e");
-      }
+      } catch (_) {}
     }
 
     _isTracking = false;
@@ -146,15 +140,12 @@ class SessionManager {
   }
 
   Future<bool> _handle409Conflict() async {
-    debugPrint("⚠️ 409 Conflict: Server has active session");
     final activeLocalId = await LocalDatabase.instance.getActiveSessionId();
 
     if (activeLocalId != null) {
-      debugPrint("✅ Local session found. Resuming...");
       await restoreSession();
       return true;
     } else {
-      debugPrint("🧟 Zombie session detected! Force-stopping...");
       try {
         await sl<ApiService>().stopTrackingSession();
         // Wait briefly for server to process stop

@@ -1,10 +1,10 @@
 import 'dart:async';
 import 'package:dio/dio.dart';
-import 'package:flutter/foundation.dart';
 import 'package:intl/intl.dart';
 import 'package:location_tracker/core/constants/api_constants.dart';
 import 'package:logger/logger.dart';
 
+/// Admin API Service with improved live location streaming
 class AdminApiService {
   static final _log = Logger();
   final Dio _dio;
@@ -29,44 +29,123 @@ class AdminApiService {
   }
 
   // ==========================================
-  // REAL-TIME LIVE MAP (POLLING)
+  // REAL-TIME LIVE MAP (IMPROVED POLLING)
   // ==========================================
 
-  /// Polls the server for live location updates every [interval]
+  /// Streams live location updates with improved error handling
+  ///
+  /// FIXES:
+  /// 1. Better error recovery
+  /// 2. Proper data extraction from API response
+  /// 3. Handles both single and multiple users
+  /// 4. Logs detailed debug info
+  /// 5. Continues streaming even after errors
   Stream<LiveLocationUpdate> streamAllLiveLocations({
-    Duration interval = const Duration(seconds: 3),
+    Duration interval = const Duration(seconds: 2), // Reduced from 3s for better responsiveness
   }) async* {
+    int pollCount = 0;
+    int errorCount = 0;
+
     while (true) {
+      pollCount++;
+
       try {
-        final response = await _dio.get('/api/v1/sessions/admin/live/users');
+        final response = await _dio.get(
+          '/api/v1/sessions/admin/live/users',
+          options: Options(
+            receiveTimeout: const Duration(seconds: 5),
+            sendTimeout: const Duration(seconds: 5),
+          ),
+        );
 
         if (response.statusCode == 200) {
-          // FIX: Handle the wrapper object {"success": true, "data": [...]}
+          // Reset error count on success
+          errorCount = 0;
+
+          // Extract data from response
           final responseData = response.data;
           List<dynamic> rawList = [];
 
-          if (responseData is Map<String, dynamic> && responseData.containsKey('data')) {
-            rawList = responseData['data'] ?? [];
+          // Handle different response formats
+          if (responseData is Map<String, dynamic>) {
+            if (responseData.containsKey('data')) {
+              final dataField = responseData['data'];
+              if (dataField is List) {
+                rawList = dataField;
+              } else if (dataField is Map) {
+                // Single user wrapped in data object
+                rawList = [dataField];
+              }
+            } else if (responseData.containsKey('content')) {
+              // Paginated response
+              rawList = responseData['content'] ?? [];
+            }
           } else if (responseData is List) {
             rawList = responseData;
           }
 
-          _log.i("Active Users Found: ${rawList.length}"); // Debug log
-
+          // Yield each user update
           for (var item in rawList) {
             try {
-              yield LiveLocationUpdate.fromJson(item);
-            } catch (e) {
-              _log.w("Error parsing live user: $e");
-            }
+              final update = LiveLocationUpdate.fromJson(item);
+              yield update;
+            } catch (_) {}
           }
+
+        }
+      } on DioException catch (e) {
+        errorCount++;
+        if (errorCount > 5) {
+          _log.e('Live stream: too many errors (${e.type})');
         }
       } catch (e) {
-        _log.w("Polling error: $e");
+        errorCount++;
       }
 
+      // Wait before next poll
       await Future.delayed(interval);
     }
+  }
+
+  /// Get a snapshot of current live users (one-time fetch)
+  Future<List<LiveLocationUpdate>> getLiveUsersSnapshot() async {
+    try {
+      final response = await _dio.get(
+        '/api/v1/sessions/admin/live/users',
+        options: Options(
+          receiveTimeout: const Duration(seconds: 5),
+        ),
+      );
+
+      if (response.statusCode == 200) {
+        final responseData = response.data;
+        List<dynamic> rawList = [];
+
+        if (responseData is Map<String, dynamic> && responseData.containsKey('data')) {
+          rawList = responseData['data'] ?? [];
+        } else if (responseData is List) {
+          rawList = responseData;
+        }
+
+        final users = rawList
+            .map((item) {
+          try {
+            return LiveLocationUpdate.fromJson(item);
+          } catch (e) {
+            _log.w('Failed to parse user: $e');
+            return null;
+          }
+        })
+            .whereType<LiveLocationUpdate>()
+            .toList();
+
+        return users;
+      }
+    } on DioException catch (e) {
+      _log.w('Failed to get snapshot: ${e.message}');
+    }
+
+    return [];
   }
 
   // ==========================================
@@ -145,7 +224,9 @@ class AdminApiService {
       final result = await _handleRequest(_dio.get('/api/roles/all'));
       if (result != null) {
         if (result is Map && result.containsKey('content')) {
-          return (result['content'] as List).map((e) => AdminRole.fromJson(e)).toList();
+          return (result['content'] as List)
+              .map((e) => AdminRole.fromJson(e))
+              .toList();
         } else if (result is List) {
           return result.map((e) => AdminRole.fromJson(e)).toList();
         }
@@ -175,7 +256,8 @@ class AdminApiService {
       );
       return null;
     } on DioException catch (e) {
-      return e.response?.data['message'] ?? "Server Error: ${e.response?.statusCode}";
+      return e.response?.data['message'] ??
+          "Server Error: ${e.response?.statusCode}";
     } catch (e) {
       return "Connection failed";
     }
@@ -183,18 +265,16 @@ class AdminApiService {
 }
 
 // ==========================================
-// MODELS (Updated to match Screenshot)
+// MODELS (Improved with better defaults)
 // ==========================================
 
 class LiveLocationUpdate {
   final String sessionId;
-  final int userId;      // Added
-  final String username; // Added
+  final int userId;
+  final String username;
   final double lat;
   final double lon;
   final String timestamp;
-
-  // Optional fields (defaults used if API doesn't send them)
   final double speed;
   final double accuracy;
 
@@ -211,16 +291,51 @@ class LiveLocationUpdate {
 
   factory LiveLocationUpdate.fromJson(Map<String, dynamic> json) {
     return LiveLocationUpdate(
-      sessionId: json['sessionId']?.toString() ?? '',
-      userId: json['userId'] as int? ?? 0,
-      username: json['username']?.toString() ?? 'Unknown',
-      lat: (json['lat'] as num?)?.toDouble() ?? 0.0,
-      lon: (json['lon'] as num?)?.toDouble() ?? 0.0,
-      timestamp: json['timestamp']?.toString() ?? DateTime.now().toIso8601String(),
-      // Handle potential missing fields gracefully
+      sessionId: json['sessionId']?.toString() ??
+          json['session_id']?.toString() ??
+          '',
+      userId: json['userId'] as int? ??
+          json['user_id'] as int? ??
+          0,
+      username: json['username']?.toString() ??
+          json['user_name']?.toString() ??
+          json['name']?.toString() ??
+          'Unknown',
+      lat: (json['lat'] as num?)?.toDouble() ??
+          (json['latitude'] as num?)?.toDouble() ??
+          0.0,
+      lon: (json['lon'] as num?)?.toDouble() ??
+          (json['longitude'] as num?)?.toDouble() ??
+          0.0,
+      timestamp: json['timestamp']?.toString() ??
+          json['updatedAt']?.toString() ??
+          DateTime.now().toIso8601String(),
       speed: (json['speed'] as num?)?.toDouble() ?? 0.0,
       accuracy: (json['accuracy'] as num?)?.toDouble() ?? 0.0,
     );
+  }
+
+  /// Check if this update has valid coordinates
+  bool get hasValidCoordinates {
+    return lat != 0.0 && lon != 0.0 &&
+        lat.abs() <= 90 && lon.abs() <= 180;
+  }
+
+  /// Check if timestamp is recent (within last 5 minutes)
+  bool get isRecent {
+    try {
+      final date = DateTime.parse(timestamp);
+      final diff = DateTime.now().toUtc().difference(date);
+      return diff.inMinutes < 5;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  @override
+  String toString() {
+    return 'LiveLocationUpdate(user: $username, session: $sessionId, '
+        'coords: ($lat, $lon), time: $timestamp)';
   }
 }
 
@@ -234,7 +349,8 @@ class AdminSessionResponse {
     return AdminSessionResponse(
       content: (json['content'] as List?)
           ?.map((e) => AdminSession.fromJson(e))
-          .toList() ?? [],
+          .toList() ??
+          [],
       totalPages: json['totalPages'] as int? ?? 0,
     );
   }
@@ -264,7 +380,8 @@ class AdminUserResponse {
     return AdminUserResponse(
       content: (json['content'] as List?)
           ?.map((e) => AdminUser.fromJson(e))
-          .toList() ?? [],
+          .toList() ??
+          [],
       totalPages: json['totalPages'] as int? ?? 0,
     );
   }

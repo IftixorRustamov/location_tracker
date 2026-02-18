@@ -3,6 +3,7 @@ import 'package:get_it/get_it.dart';
 import 'package:location_tracker/core/network/dio_client.dart';
 import 'package:location_tracker/core/services/admin_api_service.dart';
 import 'package:location_tracker/core/services/api_service.dart';
+import 'package:location_tracker/core/services/local_db_service.dart';
 import 'package:location_tracker/core/services/map_matching_service.dart';
 import 'package:location_tracker/features/auth/bloc/auth_bloc.dart';
 import 'package:logger/logger.dart';
@@ -17,13 +18,13 @@ Future<void> init() async {
 
   sl.registerLazySingleton<Dio>(() => DioClient(sl<SharedPreferences>()).dio);
 
+  sl.registerLazySingleton<LocalDatabase>(() => LocalDatabase.instance);
   sl.registerLazySingleton<ApiService>(
     () => ApiService(sl<Dio>(), sl<SharedPreferences>()),
   );
   sl.registerLazySingleton<AdminApiService>(
     () => AdminApiService(sl<Dio>()),
   );
-
   sl.registerLazySingleton<MapMatchingService>(
     () => MapMatchingService(sl<Dio>()),
   );

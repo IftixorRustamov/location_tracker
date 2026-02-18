@@ -90,8 +90,13 @@ class _HomeScreenState extends State<HomeScreen> {
                 // 3. CONTROLS (Right Buttons)
                 ControlButtons(
                   shouldFollowUser: _shouldFollowUser,
-                  onToggleFollow: () => setState(() => _shouldFollowUser = !_shouldFollowUser),
-                  onCenter: _controller.centerOnUser,
+                  onToggleFollow: () =>
+                      setState(() => _shouldFollowUser = !_shouldFollowUser),
+                  onCenter: () {
+                    setState(() => _shouldFollowUser = true);
+
+                    _controller.centerOnUser();
+                  },
                 ),
 
                 // 4. LOADING OVERLAY (UX Improvement)
@@ -111,7 +116,8 @@ class _HomeScreenState extends State<HomeScreen> {
               isBusy: _controller.isBusy,
               onPressed: () => _controller.toggleTracking(_showSnack),
             ),
-            floatingActionButtonLocation: FloatingActionButtonLocation.centerFloat,
+            floatingActionButtonLocation:
+                FloatingActionButtonLocation.centerFloat,
           );
         },
       ),

@@ -1,4 +1,3 @@
-import 'package:flutter/foundation.dart';
 import 'package:location_tracker/core/services/local_db_service.dart';
 import 'package:location_tracker/data/models/location_point.dart';
 
@@ -36,15 +35,9 @@ class DatabaseBuffer {
         batch,
         _currentSessionId!,
       );
-      debugPrint("✅ Flushed ${batch.length} points to DB");
     } catch (e) {
-      debugPrint('❌ Failed to save points to DB: $e');
-
-      // Re-add with overflow protection
       if (_pointBuffer.length + batch.length <= maxBufferLimit) {
         _pointBuffer.insertAll(0, batch);
-      } else {
-        debugPrint('⚠️ Buffer overflow! Dropped ${batch.length} points.');
       }
     }
   }
