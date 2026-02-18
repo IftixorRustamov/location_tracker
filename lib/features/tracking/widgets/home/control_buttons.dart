@@ -20,7 +20,7 @@ class ControlButtons extends StatelessWidget {
       child: Column(
         children: [
           FloatingActionButton.small(
-            heroTag: "follow_btn",
+            heroTag: 'follow_btn',
             backgroundColor: Colors.white,
             onPressed: onToggleFollow,
             child: Icon(
@@ -30,10 +30,10 @@ class ControlButtons extends StatelessWidget {
           ),
           const SizedBox(height: 12),
           FloatingActionButton.small(
-            heroTag: "center_btn",
+            heroTag: 'center_btn',
             backgroundColor: Colors.white,
             onPressed: onCenter,
-            child: const Icon(Icons.my_location, color: Colors.black87),
+            child: const Icon(Icons.my_location, color: Colors.blue),
           ),
         ],
       ),
