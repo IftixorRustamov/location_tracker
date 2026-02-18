@@ -2,7 +2,7 @@ import 'dart:async';
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 import 'package:location_tracker/core/constants/api_constants.dart';
-import 'package:location_tracker/core/constants/secondary.dart';
+import 'package:location_tracker/core/constants/storage_keys.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 class AuthInterceptor extends Interceptor {
@@ -24,7 +24,7 @@ class AuthInterceptor extends Interceptor {
       return handler.next(options);
     }
 
-    final token = _prefs.getString(SecondaryConstants.accessToken);
+    final token = _prefs.getString(StorageKeys.accessToken);
     if (token != null && token.isNotEmpty) {
       options.headers['Authorization'] = 'Bearer $token';
     }
@@ -34,13 +34,12 @@ class AuthInterceptor extends Interceptor {
 
   @override
   void onError(DioException err, ErrorInterceptorHandler handler) async {
-    // 1. Filter errors: Only handle 401s from non-auth endpoints
     if (err.response?.statusCode != 401 ||
         _isAuthEndpoint(err.requestOptions.path)) {
       return handler.next(err);
     }
 
-    // 2. Queue logic: If a refresh is already running, wait for it
+    //  If a refresh is already running, wait for it
     if (_refreshCompleter != null && !_refreshCompleter!.isCompleted) {
       final success = await _refreshCompleter!.future;
       if (success) {
@@ -50,7 +49,6 @@ class AuthInterceptor extends Interceptor {
       }
     }
 
-    // 3. Loop protection
     if (_refreshAttempts >= _maxRefreshAttempts) {
       debugPrint("❌ Max refresh attempts reached. Logging out.");
       _refreshAttempts = 0;
@@ -58,7 +56,6 @@ class AuthInterceptor extends Interceptor {
       return handler.next(err);
     }
 
-    // 4. Start Refresh
     _refreshCompleter = Completer<bool>();
     _refreshAttempts++;
 
@@ -67,7 +64,7 @@ class AuthInterceptor extends Interceptor {
       _refreshCompleter?.complete(success);
 
       if (success) {
-        _refreshAttempts = 0; // Reset on success
+        _refreshAttempts = 0;
         await _retryRequest(err.requestOptions, handler);
       } else {
         _failAll(err, handler);
@@ -75,7 +72,6 @@ class AuthInterceptor extends Interceptor {
     } catch (e) {
       _failAll(err, handler);
     } finally {
-      // Clear completer after small delay to handle "tail" requests
       Future.delayed(const Duration(milliseconds: 50), () {
         _refreshCompleter = null;
       });
@@ -83,10 +79,9 @@ class AuthInterceptor extends Interceptor {
   }
 
   Future<bool> _performTokenRefresh() async {
-    final refreshToken = _prefs.getString(SecondaryConstants.refreshToken);
+    final refreshToken = _prefs.getString(StorageKeys.refreshToken);
     if (refreshToken == null) return false;
 
-    // Use a fresh Dio instance to avoid interceptor recursion
     final tempDio = Dio(
       BaseOptions(
         baseUrl: ApiConstants.baseUrl,
@@ -103,20 +98,18 @@ class AuthInterceptor extends Interceptor {
       );
 
       if (response.statusCode == 200) {
-        // Adjust parsing based on your exact API structure
         final data = response.data['data'] ?? response.data;
         final newAccess = data['accessToken'];
         final newRefresh = data['refreshToken'];
 
         if (newAccess != null) {
-          await _prefs.setString(SecondaryConstants.accessToken, newAccess);
+          await _prefs.setString(StorageKeys.accessToken, newAccess);
           if (newRefresh != null) {
-            await _prefs.setString(SecondaryConstants.refreshToken, newRefresh);
+            await _prefs.setString(StorageKeys.refreshToken, newRefresh);
           }
           return true;
         }
       }
-      // If refresh fails (e.g. 403), user must relogin
       await _clearSession();
       return false;
     } catch (e) {
@@ -129,9 +122,8 @@ class AuthInterceptor extends Interceptor {
     RequestOptions requestOptions,
     ErrorInterceptorHandler handler,
   ) async {
-    final token = _prefs.getString(SecondaryConstants.accessToken);
+    final token = _prefs.getString(StorageKeys.accessToken);
 
-    // Create optimized retry options
     final opts = Options(
       method: requestOptions.method,
       headers: {...requestOptions.headers, 'Authorization': 'Bearer $token'},

@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:location_tracker/core/config/routes.dart';
+import 'package:location_tracker/core/di/injection_container.dart';
+import 'package:location_tracker/core/services/api_service.dart';
 import 'package:location_tracker/features/auth/bloc/auth_bloc.dart';
 import 'package:location_tracker/features/auth/bloc/auth_state.dart';
 import 'package:location_tracker/features/tracking/logic/tracking_controller.dart';
@@ -24,7 +26,8 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   void initState() {
     super.initState();
-    _controller = TrackingController();
+    // ApiService is injected — no mid-method sl<> calls inside the controller.
+    _controller = TrackingController(sl<ApiService>());
     _controller.initialize(_showSnack);
   }
 
@@ -66,7 +69,6 @@ class _HomeScreenState extends State<HomeScreen> {
         listenable: _controller,
         builder: (context, _) {
           return Scaffold(
-            // Use Stack to layer Map -> HUD -> Controls -> Loading
             body: Stack(
               children: [
                 // 1. MAP LAYER
@@ -75,7 +77,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   shouldFollowUser: _shouldFollowUser,
                 ),
 
-                // 2. HUD LAYER (Top Stats)
+                // 2. HUD LAYER
                 TrackingHUD(
                   isTracking: _controller.isTracking,
                   isOffline: _controller.isOffline,
@@ -87,19 +89,18 @@ class _HomeScreenState extends State<HomeScreen> {
                   onProfileTap: _openProfile,
                 ),
 
-                // 3. CONTROLS (Right Buttons)
+                // 3. MAP CONTROLS
                 ControlButtons(
                   shouldFollowUser: _shouldFollowUser,
                   onToggleFollow: () =>
                       setState(() => _shouldFollowUser = !_shouldFollowUser),
                   onCenter: () {
                     setState(() => _shouldFollowUser = true);
-
                     _controller.centerOnUser();
                   },
                 ),
 
-                // 4. LOADING OVERLAY (UX Improvement)
+                // 4. LOADING OVERLAY
                 if (_controller.isBusy)
                   Container(
                     color: Colors.black.withOpacity(0.3),
@@ -109,15 +110,13 @@ class _HomeScreenState extends State<HomeScreen> {
                   ),
               ],
             ),
-
-            // 5. FAB (Bottom)
             floatingActionButton: TrackingFab(
               isTracking: _controller.isTracking,
               isBusy: _controller.isBusy,
               onPressed: () => _controller.toggleTracking(_showSnack),
             ),
             floatingActionButtonLocation:
-                FloatingActionButtonLocation.centerFloat,
+            FloatingActionButtonLocation.centerFloat,
           );
         },
       ),

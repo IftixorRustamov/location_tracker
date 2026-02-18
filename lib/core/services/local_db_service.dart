@@ -35,7 +35,6 @@ class LocalDatabase {
   }
 
   Future<void> _createDB(Database db, int version) async {
-    // 1. Table for SESSIONS with 'end_time'
     await db.execute('''
       CREATE TABLE sessions (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -46,7 +45,6 @@ class LocalDatabase {
       )
     ''');
 
-    // 2. Table for POINTS
     await db.execute('''
       CREATE TABLE points (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -103,7 +101,11 @@ class LocalDatabase {
   }
 
   // 🛠️ NEW: Explicitly close the session
-  Future<void> closeSession(int sessionId, double distance, int duration) async {
+  Future<void> closeSession(
+    int sessionId,
+    double distance,
+    int duration,
+  ) async {
     final db = await database;
     await db.update(
       'sessions',
@@ -118,10 +120,10 @@ class LocalDatabase {
   }
 
   Future<void> updateSessionStats(
-      int sessionId,
-      double distance,
-      int duration,
-      ) async {
+    int sessionId,
+    double distance,
+    int duration,
+  ) async {
     final db = await database;
     await db.update(
       'sessions',
@@ -134,7 +136,11 @@ class LocalDatabase {
   Future<void> deleteSession(int sessionId) async {
     try {
       final db = await database;
-      await db.delete('points', where: 'session_id = ?', whereArgs: [sessionId]);
+      await db.delete(
+        'points',
+        where: 'session_id = ?',
+        whereArgs: [sessionId],
+      );
       await db.delete('sessions', where: 'id = ?', whereArgs: [sessionId]);
     } catch (e) {
       rethrow;
@@ -157,14 +163,11 @@ class LocalDatabase {
     return result.map((json) => LocationPoint.fromJson(json)).toList();
   }
 
-  // ==========================================
-  // POINTS MANAGEMENT (Optimized)
-  // ==========================================
 
   Future<void> insertPointsBatch(
-      List<LocationPoint> points,
-      int sessionId,
-      ) async {
+    List<LocationPoint> points,
+    int sessionId,
+  ) async {
     if (points.isEmpty) return;
     final db = await database;
     final batch = db.batch();

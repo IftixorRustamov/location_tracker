@@ -1,9 +1,7 @@
-import 'package:flutter/cupertino.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:jwt_decoder/jwt_decoder.dart';
-import 'package:location_tracker/core/constants/secondary.dart';
 import 'package:location_tracker/core/services/api_service.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 import 'auth_event.dart';
 import 'auth_state.dart';
 
@@ -19,20 +17,18 @@ class AuthBloc extends Bloc<AuthEvent, AuthState> {
   }
 
   Future<void> _onAppStarted(AppStarted event, Emitter<AuthState> emit) async {
-    final prefs = await SharedPreferences.getInstance();
-    final token = prefs.getString(SecondaryConstants.accessToken);
-    final role = prefs.getString(SecondaryConstants.userRole) ?? 'USER';
-
-    if (token != null && !JwtDecoder.isExpired(token)) {
-      emit(Authenticated(token: token, role: role));
+    if (_apiService.isTokenValid()) {
+      final role = _apiService.getSavedRole() ?? 'USER';
+      emit(Authenticated(token: '', role: role));
     } else {
       emit(Unauthenticated());
     }
   }
+
   Future<void> _onLoginSubmitted(
-      LoginSubmitted event,
-      Emitter<AuthState> emit,
-      ) async {
+    LoginSubmitted event,
+    Emitter<AuthState> emit,
+  ) async {
     emit(AuthLoading());
     try {
       final result = await _apiService.login(
@@ -40,64 +36,28 @@ class AuthBloc extends Bloc<AuthEvent, AuthState> {
         password: event.password,
       );
 
-      debugPrint("🔍 LOGIN RESULT DATA: $result");
-
       if (result['success'] == true) {
-        String token = '';
+        final token =
+            (result['data']?['data']?['accessToken'] as String?) ?? '';
 
-        // --- FIX: Handle Double Nesting (data -> data -> accessToken) ---
-
-        // 1. Check deeply nested path (Most likely based on your logs)
-        if (result['data'] != null &&
-            result['data']['data'] != null &&
-            result['data']['data']['accessToken'] != null) {
-          token = result['data']['data']['accessToken'];
+        if (token.isEmpty) {
+          emit(AuthFailure('Login succeeded but no token was returned.'));
+          return;
         }
 
-        // 2. Fallback: Standard path (data -> accessToken)
-        else if (result['data'] != null && result['data']['accessToken'] != null) {
-          token = result['data']['accessToken'];
-        }
+        // Decode role from JWT and persist it via ApiService.
+        final role = _decodeRole(token);
+        await _apiService.saveRole(role);
 
-        // 3. Fallback: Direct root (accessToken)
-        else if (result['accessToken'] != null) {
-          token = result['accessToken'];
-        }
-
-        if (token.isNotEmpty) {
-          // --- Role Logic ---
-          String userRole = 'USER';
-          try {
-            Map<String, dynamic> decodedToken = JwtDecoder.decode(token);
-            final auths = decodedToken['authorities'] ?? decodedToken['roles'] ?? [];
-            if (auths is List) {
-              if (auths.contains('ROLE_ADMIN') || auths.contains('ADMIN')) {
-                userRole = 'ADMIN';
-              }
-            }
-          } catch (e) {
-            debugPrint("⚠️ Token decode failed: $e");
-          }
-
-          // Save & Emit
-          final prefs = await SharedPreferences.getInstance();
-          await prefs.setString(SecondaryConstants.accessToken, token);
-          await prefs.setString(SecondaryConstants.userRole, userRole);
-
-          emit(Authenticated(token: token, role: userRole));
-        } else {
-          debugPrint("❌ ERROR: Token not found in any expected path.");
-          emit(AuthFailure("Login successful, but token is missing."));
-        }
+        emit(Authenticated(token: token, role: role));
       } else {
         emit(AuthFailure(result['message'] ?? 'Login failed'));
       }
     } catch (e) {
-      debugPrint("🔥 EXCEPTION: $e");
-      emit(AuthFailure('Login Error: $e'));
+      debugPrint('AuthBloc login error: $e');
+      emit(AuthFailure('A network error occurred.'));
     }
   }
-
 
   Future<void> _onRegisterSubmitted(
     RegisterSubmitted event,
@@ -111,13 +71,13 @@ class AuthBloc extends Bloc<AuthEvent, AuthState> {
         password: event.password,
       );
 
-      if (result['success']) {
+      if (result['success'] == true) {
         emit(RegisterSuccess());
       } else {
         emit(AuthFailure(result['message'] ?? 'Registration failed'));
       }
     } catch (e) {
-      emit(AuthFailure('A network error occurred: $e'));
+      emit(AuthFailure('A network error occurred.'));
     }
   }
 
@@ -128,8 +88,7 @@ class AuthBloc extends Bloc<AuthEvent, AuthState> {
     emit(AuthLoading());
     try {
       await _apiService.logout();
-      emit(Unauthenticated());
-    } catch (e) {
+    } finally {
       emit(Unauthenticated());
     }
   }
@@ -146,13 +105,27 @@ class AuthBloc extends Bloc<AuthEvent, AuthState> {
         confirmNewPassword: event.confirmPassword,
       );
 
-      if (result['success']) {
+      if (result['success'] == true) {
         emit(ChangePasswordSuccess());
       } else {
         emit(AuthFailure(result['message'] ?? 'Failed to change password'));
       }
     } catch (e) {
-      emit(AuthFailure('An error occurred: $e'));
+      emit(AuthFailure('An error occurred.'));
     }
+  }
+
+  String _decodeRole(String token) {
+    try {
+      final decoded = JwtDecoder.decode(token);
+      final auths = decoded['authorities'] ?? decoded['roles'] ?? [];
+      if (auths is List &&
+          (auths.contains('ROLE_ADMIN') || auths.contains('ADMIN'))) {
+        return 'ADMIN';
+      }
+    } catch (e) {
+      debugPrint('AuthBloc: token decode failed: $e');
+    }
+    return 'USER';
   }
 }

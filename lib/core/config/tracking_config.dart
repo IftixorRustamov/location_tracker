@@ -126,28 +126,4 @@ class TrackingConfig {
   static const bool logGpsAccuracy = true;
 }
 
-enum GpsAccuracyTier {
-  excellent(0, 10, 'Excellent'),
-  good(10, 20, 'Good'),
-  fair(20, 50, 'Fair'),
-  poor(50, 100, 'Poor'),
-  veryPoor(100, double.infinity, 'Very Poor');
-
-  const GpsAccuracyTier(this.min, this.max, this.label);
-
-  final double min;
-  final double max;
-  final String label;
-
-  static GpsAccuracyTier fromAccuracy(double accuracy) {
-    for (final tier in GpsAccuracyTier.values) {
-      if (accuracy >= tier.min && accuracy < tier.max) {
-        return tier;
-      }
-    }
-    return GpsAccuracyTier.veryPoor;
-  }
-}
-
-/// Location accuracy enum that matches Flutter's location package
 enum LocationAccuracy { powerSave, low, balanced, high, navigation }

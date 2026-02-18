@@ -19,6 +19,7 @@ Future<void> init() async {
   sl.registerLazySingleton<Dio>(() => DioClient(sl<SharedPreferences>()).dio);
 
   sl.registerLazySingleton<LocalDatabase>(() => LocalDatabase.instance);
+
   sl.registerLazySingleton<ApiService>(
     () => ApiService(sl<Dio>(), sl<SharedPreferences>()),
   );
