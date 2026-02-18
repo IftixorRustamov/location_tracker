@@ -14,22 +14,28 @@ class MapViewLayer extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return ListenableBuilder(
-      listenable: Listenable.merge([
-        controller.smoothPolylineNotifier,
-        controller.polylineNotifier,
-        controller.currentPositionNotifier,
-        controller.headingNotifier,
-      ]),
-      builder: (context, _) {
-        return YandexMapBackground(
-          polylineCoordinates:
-              controller.smoothPolylineNotifier.value.isNotEmpty
-              ? controller.smoothPolylineNotifier.value
-              : controller.polylineNotifier.value,
-          currentHeading: controller.headingNotifier.value,
-          currentPosition: controller.currentPositionNotifier.value,
-          shouldFollowUser: shouldFollowUser,
+    // This builder listens to the LIST of points changing
+    return ValueListenableBuilder(
+      valueListenable: controller.polylineNotifier,
+      builder: (context, polylineCoordinates, _) {
+
+        return ValueListenableBuilder(
+          valueListenable: controller.currentPositionNotifier,
+          builder: (context, currentPosition, _) {
+
+            return ValueListenableBuilder(
+              valueListenable: controller.headingNotifier,
+              builder: (context, heading, _) {
+
+                return YandexMapBackground(
+                  polylineCoordinates: polylineCoordinates, // Takes the fresh list
+                  currentPosition: currentPosition,
+                  currentHeading: heading,
+                  shouldFollowUser: shouldFollowUser,
+                );
+              },
+            );
+          },
         );
       },
     );
